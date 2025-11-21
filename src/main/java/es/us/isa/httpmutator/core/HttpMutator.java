@@ -2,14 +2,20 @@ package es.us.isa.httpmutator.core;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import es.us.isa.httpmutator.core.model.Mutant;
 import es.us.isa.httpmutator.core.model.MutantGroup;
 import es.us.isa.httpmutator.core.model.StandardHttpResponse;
 import es.us.isa.httpmutator.core.strategy.MutationStrategy;
+import es.us.isa.httpmutator.core.util.RandomUtils;
 
 import java.io.*;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -19,9 +25,12 @@ public class HttpMutator {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public HttpMutator() {
+        this(42);
+    }
+
+    public HttpMutator(long randomSeed) {
         this.engine = new HttpMutatorEngine();
-        // set random seed
-        // RandomUtils.setSeed(42L);
+        RandomUtils.setSeed(randomSeed);
     }
 
     /**
@@ -89,9 +98,10 @@ public class HttpMutator {
      * @param reader   JSONL input, where each non-blank line is a full HTTP response JSON
      * @param writer   JSONL output, where each line is a mutated HTTP response JSON
      * @param strategy optional mutation strategy for selecting which mutants to output
+     * @param includeMeta whether add meta info of mutation into jsonl
      * @throws IOException if an underlying IO operation fails
      */
-    public void mutateJsonlToJsonl(Reader reader, Writer writer, MutationStrategy strategy) throws IOException {
+    public void mutateJsonlToJsonl(Reader reader, Writer writer, MutationStrategy strategy, boolean includeMeta) throws IOException {
         Objects.requireNonNull(reader, "reader must not be null");
         Objects.requireNonNull(writer, "writer must not be null");
         Objects.requireNonNull(strategy, "strategy must not be null");
@@ -104,7 +114,14 @@ public class HttpMutator {
             mutateJsonl(reader, mutantGroup -> {
                 // Apply the user-defined (or default) strategy to select mutants
                 for (Mutant mutant : strategy.selectMutants(mutantGroup)) {
-                    JsonNode mutatedJson = mutant.getMutatedNode();
+                    ObjectNode mutatedJson = (ObjectNode) mutant.getMutatedNode();
+
+                    if (includeMeta) {
+                        mutatedJson.put("_originalJsonPath", mutant.getOriginalJsonPath());
+                        mutatedJson.put("_mutatorClass", mutant.getMutatorClassName());
+                        mutatedJson.put("_operatorClass", mutant.getOperatorClassName());
+                    }
+
                     try {
                         // Serialize each mutated response into the buffer
                         buffer.append(objectMapper.writeValueAsString(mutatedJson)).append('\n');
@@ -141,17 +158,34 @@ public class HttpMutator {
      * @param inputJsonl  path to the input JSONL file where each line is a single response
      * @param outputJsonl path to the output JSONL file where each line will be a mutated response
      * @param strategy    optional mutation strategy used to select which mutants to output
+     * @param includeMeta whether add meta info of mutation into jsonl
      * @throws IOException if an underlying IO operation fails
      */
-    public void mutateJsonlToJsonl(Path inputJsonl, Path outputJsonl, MutationStrategy strategy) throws IOException {
+    public void mutateJsonlToJsonl(Path inputJsonl, Path outputJsonl, MutationStrategy strategy, boolean includeMeta) throws IOException {
 
         Objects.requireNonNull(inputJsonl, "inputJsonl must not be null");
         Objects.requireNonNull(outputJsonl, "outputJsonl must not be null");
         Objects.requireNonNull(strategy, "strategy must not be null");
 
-        try (Reader reader = Files.newBufferedReader(inputJsonl); Writer writer = Files.newBufferedWriter(outputJsonl)) {
+        CharsetEncoder safeEncoder = StandardCharsets.UTF_8
+                .newEncoder()
+                .onMalformedInput(CodingErrorAction.REPLACE)
+                .onUnmappableCharacter(CodingErrorAction.REPLACE);
 
-            mutateJsonlToJsonl(reader, writer, strategy);
+
+        try (Reader reader = Files.newBufferedReader(inputJsonl, StandardCharsets.UTF_8);
+             Writer writer = new BufferedWriter(
+                     new OutputStreamWriter(
+                             Files.newOutputStream(
+                                     outputJsonl,
+                                     StandardOpenOption.CREATE,
+                                     StandardOpenOption.TRUNCATE_EXISTING
+                             ),
+                             safeEncoder
+                     )
+             )) {
+
+            mutateJsonlToJsonl(reader, writer, strategy, includeMeta);
         }
     }
 }
