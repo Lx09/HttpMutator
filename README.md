@@ -1,4 +1,7 @@
-# HTTPMutator
+<h1 align="left">
+  <img src="doc/logo.jpeg" alt="HttpMutator" width="220"/><br/>
+  HttpMutator
+</h1>
 
 HTTPMutator is a Java library that mutates HTTP responses (status code, headers, JSON body) so you can fuzz REST APIs, stress-test clients, or measure mutation scores. The engine walks normalized responses, applies weighted operators, and streams `MutantGroup` objects so you can replay or discard mutants as they are produced. `HttpMutator` is the public entry point; it wraps the internal `HttpMutatorEngine`.
 
