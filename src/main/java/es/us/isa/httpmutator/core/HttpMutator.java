@@ -70,7 +70,7 @@ public class HttpMutator {
     /**
      * Read JSONL from reader, each non-blank line is one response JSON, and stream mutants.
      */
-    public void mutateJsonl(Reader reader, Consumer<MutantGroup> consumer) throws IOException {
+    private void mutateJsonl(Reader reader, Consumer<MutantGroup> consumer) throws IOException {
         Objects.requireNonNull(reader, "reader must not be null");
         Objects.requireNonNull(consumer, "consumer must not be null");
 
@@ -109,34 +109,74 @@ public class HttpMutator {
         final StringBuilder buffer = new StringBuilder(1_048_576); // 1 MB buffer
         final int flushThreshold = 1_048_576;
 
-        try {
-            // Stream input JSONL → produce mutant groups → write selected mutants
-            mutateJsonl(reader, mutantGroup -> {
-                // Apply the user-defined (or default) strategy to select mutants
-                for (Mutant mutant : strategy.selectMutants(mutantGroup)) {
-                    ObjectNode mutatedJson = (ObjectNode) mutant.getMutatedNode();
+        try (BufferedReader br = (reader instanceof BufferedReader)
+                ? (BufferedReader) reader
+                : new BufferedReader(reader)) {
 
-                    if (includeMeta) {
-                        mutatedJson.put("_originalJsonPath", mutant.getOriginalJsonPath());
-                        mutatedJson.put("_mutatorClass", mutant.getMutatorClassName());
-                        mutatedJson.put("_operatorClass", mutant.getOperatorClassName());
-                    }
-
-                    try {
-                        // Serialize each mutated response into the buffer
-                        buffer.append(objectMapper.writeValueAsString(mutatedJson)).append('\n');
-
-                        // Flush the buffer when exceeding the threshold
-                        if (buffer.length() >= flushThreshold) {
-                            writer.write(buffer.toString());
-                            buffer.setLength(0);
-                        }
-                    } catch (IOException e) {
-                        // Checked exception cannot propagate from inside lambda
-                        throw new UncheckedIOException(e);
-                    }
+            String line;
+            // Process input JSONL line by line
+            while ((line = br.readLine()) != null) {
+                if (line.isEmpty()) {
+                    continue;
                 }
-            });
+
+                // Parse the original response JSON once per line
+                JsonNode originalNode;
+                try {
+                    originalNode = objectMapper.readTree(line);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+
+                // Extract original request id, if any (e.g., "id" field in the input JSON)
+                JsonNode idNode = originalNode.get("id");
+                final String originalId =
+                        (idNode != null && !idNode.isNull()) ? idNode.asText() : null;
+
+                // Generate mutants for this response
+                engine.getAllMutants(originalNode, mutantGroup -> {
+                    // Apply the user-provided strategy
+                    for (Mutant mutant : strategy.selectMutants(mutantGroup)) {
+                        JsonNode mutatedNode = mutant.getMutatedNode();
+
+                        try {
+                            ObjectNode mutatedJson;
+                            if (mutatedNode instanceof ObjectNode) {
+                                // Defensive copy to avoid mutating shared nodes
+                                mutatedJson = ((ObjectNode) mutatedNode).deepCopy();
+                            } else {
+                                // Wrap non-object nodes
+                                mutatedJson = objectMapper.createObjectNode();
+                                mutatedJson.set("mutated", mutatedNode);
+                            }
+
+                            // Optionally attach metadata
+                            if (includeMeta) {
+                                // Original request id (from the input JSONL line)
+                                if (originalId != null) {
+                                    mutatedJson.put("_hm_original_id", originalId);
+                                }
+                                mutatedJson.put("_hm_original_json_path", mutant.getOriginalJsonPath());
+                                mutatedJson.put("_hm_mutator", mutant.getMutatorClassName());
+                                mutatedJson.put("_hm_operator", mutant.getOperatorClassName());
+                            }
+
+                            // Serialize each mutated response into the buffer
+                            buffer.append(objectMapper.writeValueAsString(mutatedJson))
+                                    .append('\n');
+
+                            // Flush the buffer when exceeding the threshold
+                            if (buffer.length() >= flushThreshold) {
+                                writer.write(buffer.toString());
+                                buffer.setLength(0);
+                            }
+                        } catch (IOException e) {
+                            // Checked exception cannot propagate from inside lambda
+                            throw new UncheckedIOException(e);
+                        }
+                    }
+                });
+            }
 
             // Flush remaining buffered output at the end
             if (buffer.length() > 0) {
