@@ -1,0 +1,10 @@
+es/us/isa/httpmutator/core/headers/HeaderMutatorTest.class
+es/us/isa/httpmutator/core/HttpMutatorEngineTest.class
+es/us/isa/httpmutator/core/body/object/ObjectMutatorTest.class
+es/us/isa/httpmutator/core/HttpMutatorEngineTest$3.class
+es/us/isa/httpmutator/core/body/array/ArrayMutatorTest.class
+es/us/isa/httpmutator/core/converter/WebScarabBidirectionalConverterTest.class
+es/us/isa/httpmutator/core/strategy/MutationStrategyTest.class
+es/us/isa/httpmutator/core/HttpMutatorEngineTest$1.class
+es/us/isa/httpmutator/core/HttpMutatorEngineTest$2.class
+es/us/isa/httpmutator/core/body/BodyMutatorTest.class
