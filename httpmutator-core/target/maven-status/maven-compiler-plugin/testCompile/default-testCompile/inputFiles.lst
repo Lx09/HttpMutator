@@ -1,7 +1,0 @@
-/Users/lixin/Workplace/HTTPMutator/experiment/HttpMutator_Official/httpmutator-core/src/test/java/es/us/isa/httpmutator/core/HttpMutatorEngineTest.java
-/Users/lixin/Workplace/HTTPMutator/experiment/HttpMutator_Official/httpmutator-core/src/test/java/es/us/isa/httpmutator/core/body/BodyMutatorTest.java
-/Users/lixin/Workplace/HTTPMutator/experiment/HttpMutator_Official/httpmutator-core/src/test/java/es/us/isa/httpmutator/core/body/array/ArrayMutatorTest.java
-/Users/lixin/Workplace/HTTPMutator/experiment/HttpMutator_Official/httpmutator-core/src/test/java/es/us/isa/httpmutator/core/body/object/ObjectMutatorTest.java
-/Users/lixin/Workplace/HTTPMutator/experiment/HttpMutator_Official/httpmutator-core/src/test/java/es/us/isa/httpmutator/core/converter/WebScarabBidirectionalConverterTest.java
-/Users/lixin/Workplace/HTTPMutator/experiment/HttpMutator_Official/httpmutator-core/src/test/java/es/us/isa/httpmutator/core/headers/HeaderMutatorTest.java
-/Users/lixin/Workplace/HTTPMutator/experiment/HttpMutator_Official/httpmutator-core/src/test/java/es/us/isa/httpmutator/core/strategy/MutationStrategyTest.java
