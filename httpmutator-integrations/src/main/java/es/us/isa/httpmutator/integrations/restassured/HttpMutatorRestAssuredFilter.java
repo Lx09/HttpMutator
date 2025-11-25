@@ -53,6 +53,9 @@ public class HttpMutatorRestAssuredFilter implements Filter {
     /** Index in {@link #recordedInteractions} of the last observed interaction. */
     private int lastInteractionIndex = -1;
 
+    /** How to handle original assertion failures. */
+    private final OriginalAssertionFailurePolicy originalAssertionFailurePolicy;
+
     /**
      * Creates a new filter with explicit configuration.
      *
@@ -63,22 +66,24 @@ public class HttpMutatorRestAssuredFilter implements Filter {
     public HttpMutatorRestAssuredFilter(
             long randomSeed,
             MutationStrategy mutationStrategy,
-            Path reportDir
+            Path reportDir,
+            OriginalAssertionFailurePolicy originalAssertionFailurePolicy
     ) {
         this.httpMutator = new HttpMutator();
         RandomUtils.setSeed(randomSeed);
         this.mutationStrategy = mutationStrategy;
         this.reportDir = reportDir;
+        this.originalAssertionFailurePolicy = originalAssertionFailurePolicy;
     }
 
     /**
      * Creates a new filter with default seed, strategy, and report directory.
      */
     public HttpMutatorRestAssuredFilter() {
-        this(42L, new AllOperatorsStrategy(), defaultReportDir());
+        this(42L, new AllOperatorsStrategy(), defaultReportDir(), OriginalAssertionFailurePolicy.DISCARD);
     }
 
-    private static Path defaultReportDir() {
+    static Path defaultReportDir() {
         return Paths.get("target", "httpmutator-restassured");
     }
 
@@ -243,6 +248,18 @@ public class HttpMutatorRestAssuredFilter implements Filter {
     }
 
     /**
+     * Policy for handling failures of the original assertions.
+     * <ul>
+     *   <li>DISCARD: record the failure and skip mutation testing for this request.</li>
+     *   <li>THROW: record the failure (optional) and rethrow the AssertionError so the test fails.</li>
+     * </ul>
+     */
+    public enum OriginalAssertionFailurePolicy {
+        DISCARD,
+        THROW
+    }
+
+    /**
      * Aggregated summary for all observed requests and their mutation/discard status.
      */
     public static final class MutationSummary {
@@ -390,6 +407,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
         StandardHttpResponse stdResponse =
                 RestAssuredBidirectionalConverter.INSTANCE.toStandardResponse(lastResponse);
         interaction.setOriginalStandardResponse(stdResponse);
+        interaction.setAssertions(assertions);
 
         // 2) Apply assertions to the original (unmutated) response
         ValidatableResponse originalValidatable = lastResponse.then();
@@ -400,16 +418,20 @@ public class HttpMutatorRestAssuredFilter implements Filter {
             interaction.setStatus(RequestStatus.DISCARDED_ORIGINAL_ASSERTION_FAILED);
             interaction.setDiscardReason(DiscardReason.ORIGINAL_ASSERTION_FAILED);
             interaction.setMessage("Original assertions failed before mutation; request discarded.");
-            // Do NOT attach assertions for mutation; this request is not a mutation candidate
-            interaction.setAssertions(null);
             // Clear last response tracking
             lastResponse = null;
             lastInteractionIndex = -1;
-            return;
+
+            if (originalAssertionFailurePolicy == OriginalAssertionFailurePolicy.THROW) {
+                // Re-throw so the test fails immediately (JUnit-style behavior)
+                throw ae;
+            } else {
+                // DISCARD policy: we just skip mutation for this request
+                return;
+            }
         }
 
         // 3) Original assertions succeeded; record as a mutation candidate
-        interaction.setAssertions(assertions);
         interaction.setStatus(RequestStatus.OBSERVED);
         interaction.setDiscardReason(null);
         interaction.setMessage("Assertions attached and original response passed.");
@@ -581,7 +603,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
                     try {
                         // Apply user assertions; if they fail, we consider the mutant "killed"
                         assertFunc.accept(valMResp);
-                    } catch (AssertionError e) {
+                    } catch (AssertionError | Exception e) {
                         killed.incrementAndGet();
                     }
                 } catch (ConversionException e) {
