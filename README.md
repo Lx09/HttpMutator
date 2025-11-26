@@ -5,6 +5,60 @@
 
 HttpMutator mutates HTTP responses (status code, headers, JSON body) to fuzz REST clients and measure mutation scores. It walks normalized responses, applies weighted operators, and streams `MutantGroup` batches so tests can decide which mutants to execute.
 
+
+## Execution Pipeline
+
+```mermaid
+flowchart TD
+  subgraph Input
+    A[JSONL]
+    B[HAR]
+    D[Response in Java]
+  end
+
+  subgraph Standardization
+    C[StandardHttpResponse]
+    A -->|JSONL reader| C
+    B -->|HAR reader| C
+    D -->|BidirectionalConverter| C
+  end
+
+  subgraph HttpMutator
+    G[HttpMutatorEngine]
+    H[StatusCodeMutator]
+    I[HeaderMutator]
+    J[BodyMutator]
+
+    C --> G
+    G -->|Call| H
+    G -->|Call| I
+    G -->|Call| J
+  end
+
+  subgraph Mutation Strategy
+    M[AllOperatorStrategy]
+
+    H -->|MutantGroup| M
+    I -->|MutantGroup| M
+    J -->|MutantGroup| M
+  end
+
+  subgraph Mutants
+    S[Streaming Mutants]
+    M -->|select mutants| S
+  end
+
+  subgraph Output
+    Q[JSONL]
+    R[HAR]
+    P[Response in Java]
+
+    S -->|JSONL writer| Q
+    S -->|HAR writer| R
+    S -->|BidirectionalConverter| P
+  end
+```
+
 ## Features
 - **Streaming mutation engine** – `HttpMutator` emits mutants per JSON path/header/status without storing everything in memory.
 - **Converters included** – `StandardHttpResponse` is the canonical model with adapters for REST Assured (`RestAssuredBidirectionalConverter`) and WebScarab/plain HTTP text.
@@ -94,59 +148,3 @@ See the docs for deeper dives:
 - [`docs/extending-httpmutator.md`](docs/extending-httpmutator.md)
 - [`docs/output-and-reporting.md`](docs/output-and-reporting.md)
 
-## Execution Pipeline
-
-```mermaid
-flowchart TD
-  subgraph Input
-    A[JSONL]
-    B[HAR]
-    D[Response in Java]
-  end
-
-  subgraph Standardization
-    C[StandardHttpResponse]
-    A -->|JSONL reader| C
-    B -->|HAR reader| C
-    D -->|BidirectionalConverter| C
-  end
-
-  subgraph HttpMutator
-    G[HttpMutatorEngine]
-    H[StatusCodeMutator]
-    I[HeaderMutator]
-    J[BodyMutator]
-
-    C --> G
-    G -->|Call| H
-    G -->|Call| I
-    G -->|Call| J
-  end
-
-  subgraph Mutation Strategy
-    M[AllOperatorStrategy]
-
-    H -->|MutantGroup| M
-    I -->|MutantGroup| M
-    J -->|MutantGroup| M
-  end
-
-  subgraph Mutants
-    S[Streaming Mutants]
-    M -->|select mutants| S
-  end
-
-  subgraph Output
-    Q[JSONL]
-    R[HAR]
-    P[Response in Java]
-
-    S -->|JSONL writer| Q
-    S -->|HAR writer| R
-    S -->|BidirectionalConverter| P
-  end
-```
-## Limitations / Notes
-- The RestAssured filter is single-threaded and keeps in-memory interaction logs; use one filter instance per test run.
-- Mutation probabilities and ranges are driven entirely by `json-mutation.properties`; hot changes apply only after re-instantiating mutators.
-- `mutateJsonlToJsonl` expects each line to contain `"Status Code"`, `"Headers"`, and `"Body"`; non-object bodies must be plain JSON values.
