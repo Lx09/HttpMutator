@@ -7,15 +7,9 @@ At a high level, you use the filter in three steps:
 
 1. **Construction** – Create an instance of `HttpMutatorRestAssuredFilter` and register it in the global REST Assured filter chain (e.g., `RestAssured.filters(filter)`). This only makes the filter observe requests and responses; it does **not** change test behavior on its own.
 
-2. **Attach assertions** – After executing a request, call  
-   `filter.addAssertionsForLastRequest(resp -> resp ... )`.  
-   This method lets you describe how the original response should look using the standard REST Assured `ValidatableResponse` API.  
-   The filter **stores these assertions**, automatically applies them to the captured original response (so you do not need separate baseline assertions in your test body), and later **reuses the exact same assertions** as the oracle for each mutant.
+2. **Attach assertions** – After executing a request, call `filter.addAssertionsForLastRequest(resp -> resp ... )`. This method lets you describe how the original response should look using the standard REST Assured `ValidatableResponse` API. The filter **stores these assertions**, automatically applies them to the captured original response (so you do not need separate baseline assertions in your test body), and later **reuses the exact same assertions** as the oracle for each mutant.
 
-3. **Run mutations (optional)** – Finally, you may call  
-   `MutationSummary summary = filter.runAllMutations();`  
-   to generate mutants for the captured responses, replay them through the stored assertions, and obtain a summary of killed vs. surviving mutants.  
-   This step is completely **optional**: if you do **not** call `runAllMutations()`, no mutation is performed, there is no extra runtime cost, and your tests’ functional behavior and logic remain identical to the original suite.
+3. **Run mutations (optional)** – Finally, you may call `MutationSummary summary = filter.runAllMutations();` to generate mutants for the captured responses, replay them through the stored assertions, and obtain a summary of killed vs. surviving mutants. This step is completely **optional**: if you do **not** call `runAllMutations()`, no mutation is performed, there is no extra runtime cost, and your tests’ functional behavior and logic remain identical to the original suite.
 
 By separating these three steps, `HttpMutatorRestAssuredFilter` allows you to turn existing REST Assured tests into mutation-aware suites when you want it, while keeping them indistinguishable from plain tests when you don’t call `runAllMutations()`.
 
@@ -64,7 +58,4 @@ summary.getPerRequestResults().forEach(result ->
 ```
 
 ## Example Comparison Test Cases
-You can refer to the `httpmutator-examples` module for complete, runnable
-REST Assured test files that compare plain tests with `HttpMutator`-enhanced
-mutation checks, including how baseline assertions are applied and how
-mutants are evaluated.
+You can refer to the `httpmutator-examples` module for complete, runnable REST Assured test files that compare plain tests with `HttpMutator`-enhanced mutation checks, including how baseline assertions are applied and how mutants are evaluated.
