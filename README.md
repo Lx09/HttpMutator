@@ -1,5 +1,5 @@
 <h1 align="left">
-  <img src="doc/logo.jpeg" alt="HttpMutator" width="220"/><br/>
+  <img src="docs/logo.jpeg" alt="HttpMutator" width="220"/><br/>
   HttpMutator
 </h1>
 
