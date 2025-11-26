@@ -94,6 +94,58 @@ See the docs for deeper dives:
 - [`docs/extending-httpmutator.md`](docs/extending-httpmutator.md)
 - [`docs/output-and-reporting.md`](docs/output-and-reporting.md)
 
+## Execution Pipeline
+
+```mermaid
+flowchart TD
+  subgraph Input
+    A[JSONL]
+    B[HAR]
+    D[Response in Java]
+  end
+
+  subgraph Standardization
+    C[StandardHttpResponse]
+    A -->|JSONL reader| C
+    B -->|HAR reader| C
+    D -->|BidirectionalConverter| C
+  end
+
+  subgraph HttpMutator
+    G[HttpMutatorEngine]
+    H[StatusCodeMutator]
+    I[HeaderMutator]
+    J[BodyMutator]
+
+    C --> G
+    G -->|Call| H
+    G -->|Call| I
+    G -->|Call| J
+  end
+
+  subgraph Mutation Strategy
+    M[AllOperatorStrategy]
+
+    H -->|MutantGroup| M
+    I -->|MutantGroup| M
+    J -->|MutantGroup| M
+  end
+
+  subgraph Mutants
+    S[Streaming Mutants]
+    M -->|select mutants| S
+  end
+
+  subgraph Output
+    Q[JSONL]
+    R[HAR]
+    P[Response in Java]
+
+    S -->|JSONL writer| Q
+    S -->|HAR writer| R
+    S -->|BidirectionalConverter| P
+  end
+```
 ## Limitations / Notes
 - The RestAssured filter is single-threaded and keeps in-memory interaction logs; use one filter instance per test run.
 - Mutation probabilities and ranges are driven entirely by `json-mutation.properties`; hot changes apply only after re-instantiating mutators.
