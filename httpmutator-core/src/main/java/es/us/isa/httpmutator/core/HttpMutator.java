@@ -1,231 +1,273 @@
 package es.us.isa.httpmutator.core;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import es.us.isa.httpmutator.core.model.HttpExchange;
 import es.us.isa.httpmutator.core.model.Mutant;
 import es.us.isa.httpmutator.core.model.MutantGroup;
 import es.us.isa.httpmutator.core.model.StandardHttpResponse;
+import es.us.isa.httpmutator.core.reader.HttpExchangeReader;
+import es.us.isa.httpmutator.core.reporter.MutantReporter;
 import es.us.isa.httpmutator.core.strategy.MutationStrategy;
 import es.us.isa.httpmutator.core.util.RandomUtils;
+import es.us.isa.httpmutator.core.writer.MutantWriter;
 
-import java.io.*;
-import java.nio.charset.CharsetEncoder;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
+import java.io.IOException;
+import java.io.Reader;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 
+/**
+ * High-level orchestration class for running HttpMutator.
+ */
 public class HttpMutator {
+
     private final HttpMutatorEngine engine;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    /** Strategy for selecting which mutants to keep. */
+    private MutationStrategy strategy;
+
+    /** Optional writers that emit mutated responses. */
+    private final List<MutantWriter> writers = new ArrayList<>();
+
+    /** Optional reporters that collect statistics / metrics. */
+    private final List<MutantReporter> reporters = new ArrayList<>();
+
+    /** Random seed used by mutation utilities. */
+    private long randomSeed;
 
     public HttpMutator() {
-        this(42);
+        this(42L);
     }
 
     public HttpMutator(long randomSeed) {
         this.engine = new HttpMutatorEngine();
+        this.randomSeed = randomSeed;
         RandomUtils.setSeed(randomSeed);
     }
 
-    /**
-     * Main Interface：take StandardHttpResponse as input
-     */
-    public void mutate(StandardHttpResponse response, Consumer<MutantGroup> consumer) {
-        Objects.requireNonNull(response, "response must not be null");
-        Objects.requireNonNull(consumer, "consumer must not be null");
-
-        JsonNode node = response.toJsonNode();
-        engine.getAllMutants(node, consumer);
+    public HttpMutator withMutationStrategy(MutationStrategy strategy) {
+        this.strategy = Objects.requireNonNull(strategy, "strategy must not be null");
+        return this;
     }
 
-    /**
-     * Mutate a JsonNode representing a full HTTP response.
-     * Node must contain "Status Code", "Headers", and "Body".
-     */
-    public void mutate(String responseJson, Consumer<MutantGroup> consumer) {
-        Objects.requireNonNull(responseJson, "responseJson must not be null");
-        Objects.requireNonNull(consumer, "consumer must not be null");
-
-        engine.getAllMutants(responseJson, consumer);
+    public HttpMutator withWriters(List<MutantWriter> writers) {
+        this.writers.clear();
+        if (writers != null) {
+            this.writers.addAll(writers);
+        }
+        return this;
     }
 
-    /**
-     * Mutate a JsonNode representing a full HTTP response.
-     * Node must contain "Status Code", "Headers", and "Body".
-     */
-    public void mutate(JsonNode node, Consumer<MutantGroup> consumer) {
-        Objects.requireNonNull(node, "node must not be null");
-        Objects.requireNonNull(consumer, "consumer must not be null");
-
-        // For raw JsonNode we assume: mutate all 3 components
-        engine.getAllMutants(node, consumer);
+    public HttpMutator addWriter(MutantWriter writer) {
+        if (writer != null) {
+            this.writers.add(writer);
+        }
+        return this;
     }
 
-    /**
-     * Read JSONL from reader, each non-blank line is one response JSON, and stream mutants.
-     */
-    private void mutateJsonl(Reader reader, Consumer<MutantGroup> consumer) throws IOException {
-        Objects.requireNonNull(reader, "reader must not be null");
-        Objects.requireNonNull(consumer, "consumer must not be null");
+    public HttpMutator withReporters(List<MutantReporter> reporters) {
+        this.reporters.clear();
+        if (reporters != null) {
+            this.reporters.addAll(reporters);
+        }
+        return this;
+    }
 
-        try (BufferedReader br = reader instanceof BufferedReader ? (BufferedReader) reader : new BufferedReader(reader)) {
+    public HttpMutator addReporter(MutantReporter reporter) {
+        if (reporter != null) {
+            this.reporters.add(reporter);
+        }
+        return this;
+    }
 
-            String line;
-            while ((line = br.readLine()) != null) {
-                if (line.isEmpty()) {
-                    continue;
-                }
-                mutate(line, consumer);
-            }
+    public HttpMutator withRandomSeed(long randomSeed) {
+        this.randomSeed = randomSeed;
+        RandomUtils.setSeed(randomSeed);
+        return this;
+    }
+
+    public long getRandomSeed() {
+        return randomSeed;
+    }
+
+    public List<MutantWriter> getWriters() {
+        return Collections.unmodifiableList(writers);
+    }
+
+    public List<MutantReporter> getReporters() {
+        return Collections.unmodifiableList(reporters);
+    }
+
+    // ===================== core: engine + strategy =====================
+
+    private void ensureStrategyConfigured() {
+        if (strategy == null) {
+            throw new IllegalStateException("MutationStrategy must be configured via withMutationStrategy(...)");
         }
     }
 
     /**
-     * Reads responses from a JSONL stream, applies mutation (optionally filtered by
-     * a MutationStrategy), and writes each mutated response back as JSONL.
-     *
-     * <p>This method is fully streaming and can handle very large inputs without
-     * accumulating mutants in memory. Mutants are written in batches using an
-     * internal buffer to significantly reduce IO overhead when the number of
-     * mutants is large (hundreds of thousands or more).
-     *
-     * @param reader   JSONL input, where each non-blank line is a full HTTP response JSON
-     * @param writer   JSONL output, where each line is a mutated HTTP response JSON
-     * @param strategy optional mutation strategy for selecting which mutants to output
-     * @param includeMeta whether add meta info of mutation into jsonl
-     * @throws IOException if an underlying IO operation fails
+     * Single place that calls engine + strategy and returns each selected mutant.
      */
-    public void mutateJsonlToJsonl(Reader reader, Writer writer, MutationStrategy strategy, boolean includeMeta) throws IOException {
-        Objects.requireNonNull(reader, "reader must not be null");
-        Objects.requireNonNull(writer, "writer must not be null");
-        Objects.requireNonNull(strategy, "strategy must not be null");
+    private void forEachSelectedMutant(JsonNode responseNode, Consumer<MutantGroup> groupConsumer) {
+        Objects.requireNonNull(responseNode, "responseNode must not be null");
+        ensureStrategyConfigured();
+        engine.getAllMutants(responseNode, groupConsumer::accept);
+    }
 
-        final StringBuilder buffer = new StringBuilder(1_048_576); // 1 MB buffer
-        final int flushThreshold = 1_048_576;
+    // ===================== Streaming API (reader + writers + reporters) =====================
 
-        try (BufferedReader br = (reader instanceof BufferedReader)
-                ? (BufferedReader) reader
-                : new BufferedReader(reader)) {
+    public void mutateStream(HttpExchangeReader exchangeReader, Reader in) throws IOException {
+        Objects.requireNonNull(exchangeReader, "exchangeReader must not be null");
+        Objects.requireNonNull(in, "in must not be null");
+        ensureStrategyConfigured();
 
-            String line;
-            // Process input JSONL line by line
-            while ((line = br.readLine()) != null) {
-                if (line.isEmpty()) {
-                    continue;
-                }
+        exchangeReader.read(in, this::processExchangeStream);
 
-                // Parse the original response JSON once per line
-                JsonNode originalNode;
-                try {
-                    originalNode = objectMapper.readTree(line);
-                } catch (IOException e) {
-                    throw new UncheckedIOException(e);
-                }
+        notifyFinished();
+    }
 
-                // Extract original request id, if any (e.g., "id" field in the input JSON)
-                JsonNode idNode = originalNode.get("id");
-                final String originalId =
-                        (idNode != null && !idNode.isNull()) ? idNode.asText() : null;
+    private void processExchangeStream(HttpExchange exchange) {
+        StandardHttpResponse original = exchange.getResponse();
+        JsonNode responseNode = original.toJsonNode();
 
-                // Generate mutants for this response
-                engine.getAllMutants(originalNode, mutantGroup -> {
-                    // Apply the user-provided strategy
-                    for (Mutant mutant : strategy.selectMutants(mutantGroup)) {
-                        JsonNode mutatedNode = mutant.getMutatedNode();
+        forEachSelectedMutant(responseNode, group -> {
+            for (Mutant mutant : strategy.selectMutants(group)) {
+                JsonNode mutatedNode = mutant.getMutatedNode();
+                StandardHttpResponse mutated = StandardHttpResponse.fromJsonNode(mutatedNode);
 
-                        try {
-                            ObjectNode mutatedJson;
-                            if (mutatedNode instanceof ObjectNode) {
-                                // Defensive copy to avoid mutating shared nodes
-                                mutatedJson = ((ObjectNode) mutatedNode).deepCopy();
-                            } else {
-                                // Wrap non-object nodes
-                                mutatedJson = objectMapper.createObjectNode();
-                                mutatedJson.set("mutated", mutatedNode);
-                            }
-
-                            // Optionally attach metadata
-                            if (includeMeta) {
-                                // Original request id (from the input JSONL line)
-                                if (originalId != null) {
-                                    mutatedJson.put("_hm_original_id", originalId);
-                                }
-                                mutatedJson.put("_hm_original_json_path", mutant.getOriginalJsonPath());
-                                mutatedJson.put("_hm_mutator", mutant.getMutatorClassName());
-                                mutatedJson.put("_hm_operator", mutant.getOperatorClassName());
-                            }
-
-                            // Serialize each mutated response into the buffer
-                            buffer.append(objectMapper.writeValueAsString(mutatedJson))
-                                    .append('\n');
-
-                            // Flush the buffer when exceeding the threshold
-                            if (buffer.length() >= flushThreshold) {
-                                writer.write(buffer.toString());
-                                buffer.setLength(0);
-                            }
-                        } catch (IOException e) {
-                            // Checked exception cannot propagate from inside lambda
-                            throw new UncheckedIOException(e);
-                        }
+                // writers
+                for (MutantWriter writer : writers) {
+                    try {
+                        writer.write(exchange, mutated, mutant);
+                    } catch (IOException e) {
+                        throw new RuntimeException("Failed to write mutated response", e);
                     }
-                });
-            }
+                }
 
-            // Flush remaining buffered output at the end
-            if (buffer.length() > 0) {
-                writer.write(buffer.toString());
+                // reporters
+                for (MutantReporter reporter : reporters) {
+                    reporter.onMutant(exchange, mutated, mutant);
+                }
             }
+        });
+    }
 
-        } catch (UncheckedIOException e) {
-            // Convert back into a checked IOException to preserve method signature
-            throw e.getCause();
+    private void notifyFinished() throws IOException {
+        for (MutantReporter reporter : reporters) {
+            reporter.onFinished();
         }
     }
 
-    /**
-     * Convenience method for mutating an input JSONL file and writing the resulting
-     * mutants to an output JSONL file. Both input and output are processed in a
-     * fully streaming fashion, allowing very large mutation sets to be handled
-     * without accumulating them in memory.
-     *
-     * @param inputJsonl  path to the input JSONL file where each line is a single response
-     * @param outputJsonl path to the output JSONL file where each line will be a mutated response
-     * @param strategy    optional mutation strategy used to select which mutants to output
-     * @param includeMeta whether add meta info of mutation into jsonl
-     * @throws IOException if an underlying IO operation fails
-     */
-    public void mutateJsonlToJsonl(Path inputJsonl, Path outputJsonl, MutationStrategy strategy, boolean includeMeta) throws IOException {
+    // ===================== In-memory: StandardHttpResponse → List =====================
 
-        Objects.requireNonNull(inputJsonl, "inputJsonl must not be null");
-        Objects.requireNonNull(outputJsonl, "outputJsonl must not be null");
-        Objects.requireNonNull(strategy, "strategy must not be null");
+    public List<StandardHttpResponse> mutate(StandardHttpResponse original) {
+        Objects.requireNonNull(original, "original must not be null");
+        ensureStrategyConfigured();
 
-        CharsetEncoder safeEncoder = StandardCharsets.UTF_8
-                .newEncoder()
-                .onMalformedInput(CodingErrorAction.REPLACE)
-                .onUnmappableCharacter(CodingErrorAction.REPLACE);
+        List<StandardHttpResponse> results = new ArrayList<>();
+        HttpExchange exchange = new HttpExchange(null, original, "in-memory");
+        JsonNode responseNode = original.toJsonNode();
 
+        forEachSelectedMutant(responseNode, group -> {
+            for (Mutant mutant : strategy.selectMutants(group)) {
+                StandardHttpResponse mutated =
+                        StandardHttpResponse.fromJsonNode(mutant.getMutatedNode());
+                results.add(mutated);
 
-        try (Reader reader = Files.newBufferedReader(inputJsonl, StandardCharsets.UTF_8);
-             Writer writer = new BufferedWriter(
-                     new OutputStreamWriter(
-                             Files.newOutputStream(
-                                     outputJsonl,
-                                     StandardOpenOption.CREATE,
-                                     StandardOpenOption.TRUNCATE_EXISTING
-                             ),
-                             safeEncoder
-                     )
-             )) {
+                for (MutantReporter reporter : reporters) {
+                    reporter.onMutant(exchange, mutated, mutant);
+                }
+            }
+        });
 
-            mutateJsonlToJsonl(reader, writer, strategy, includeMeta);
-        }
+        return results;
+    }
+
+    // ===================== In-memory: JsonNode → List<JsonNode> =====================
+
+    public List<JsonNode> mutate(JsonNode canonicalResponseNode) {
+        Objects.requireNonNull(canonicalResponseNode, "canonicalResponseNode must not be null");
+        ensureStrategyConfigured();
+
+        StandardHttpResponse original =
+                StandardHttpResponse.fromJsonNode(canonicalResponseNode);
+        HttpExchange exchange = new HttpExchange(null, original, "in-memory");
+
+        List<JsonNode> results = new ArrayList<>();
+
+        forEachSelectedMutant(canonicalResponseNode, group -> {
+            for (Mutant mutant : strategy.selectMutants(group)) {
+                JsonNode mutatedNode = mutant.getMutatedNode();
+                results.add(mutatedNode);
+
+                StandardHttpResponse mutated =
+                        StandardHttpResponse.fromJsonNode(mutatedNode);
+
+                for (MutantReporter reporter : reporters) {
+                    reporter.onMutant(exchange, mutated, mutant);
+                }
+            }
+        });
+
+        return results;
+    }
+
+    // ===================== In-memory streaming: StandardHttpResponse =====================
+
+    public void mutate(StandardHttpResponse original,
+                       Consumer<StandardHttpResponse> consumer) {
+
+        Objects.requireNonNull(original, "original must not be null");
+        Objects.requireNonNull(consumer, "consumer must not be null");
+        ensureStrategyConfigured();
+
+        HttpExchange exchange = new HttpExchange(null, original, "in-memory");
+        JsonNode responseNode = original.toJsonNode();
+
+        forEachSelectedMutant(responseNode, group -> {
+            for (Mutant mutant : strategy.selectMutants(group)) {
+                StandardHttpResponse mutated =
+                        StandardHttpResponse.fromJsonNode(mutant.getMutatedNode());
+
+                consumer.accept(mutated);
+
+                for (MutantReporter reporter : reporters) {
+                    reporter.onMutant(exchange, mutated, mutant);
+                }
+            }
+        });
+    }
+
+    // ===================== In-memory streaming: JsonNode =====================
+
+    public void mutate(JsonNode canonicalResponseNode,
+                       Consumer<JsonNode> consumer) {
+
+        Objects.requireNonNull(canonicalResponseNode, "canonicalResponseNode must not be null");
+        Objects.requireNonNull(consumer, "consumer must not be null");
+        ensureStrategyConfigured();
+
+        StandardHttpResponse original =
+                StandardHttpResponse.fromJsonNode(canonicalResponseNode);
+        HttpExchange exchange = new HttpExchange(null, original, "in-memory");
+
+        forEachSelectedMutant(canonicalResponseNode, group -> {
+            for (Mutant mutant : strategy.selectMutants(group)) {
+                JsonNode mutatedNode = mutant.getMutatedNode();
+
+                consumer.accept(mutatedNode);
+
+                StandardHttpResponse mutated =
+                        StandardHttpResponse.fromJsonNode(mutatedNode);
+
+                for (MutantReporter reporter : reporters) {
+                    reporter.onMutant(exchange, mutated, mutant);
+                }
+            }
+        });
     }
 }

@@ -593,7 +593,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
         final AtomicInteger killed = new AtomicInteger();
 
         // Delegate to HttpMutator: it will provide a MutantGroup to inspect
-        httpMutator.mutate(std, mutantGroup -> {
+        httpMutator.mutateStream(std, mutantGroup -> {
             mutationStrategy.selectMutants(mutantGroup).forEach(mutant -> {
                 // Build mutated StandardHttpResponse from the mutated JSON node
                 StandardHttpResponse stdMResp = StandardHttpResponse.fromJsonNode(mutant.getMutatedNode());
