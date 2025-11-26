@@ -3,115 +3,98 @@
   HttpMutator
 </h1>
 
-HTTPMutator is a Java library that mutates HTTP responses (status code, headers, JSON body) so you can fuzz REST APIs, stress-test clients, or measure mutation scores. The engine walks normalized responses, applies weighted operators, and streams `MutantGroup` objects so you can replay or discard mutants as they are produced. `HttpMutator` is the public entry point; it wraps the internal `HttpMutatorEngine`.
+HttpMutator mutates HTTP responses (status code, headers, JSON body) to fuzz REST clients and measure mutation scores. It walks normalized responses, applies weighted operators, and streams `MutantGroup` batches so tests can decide which mutants to execute.
 
-## What HTTPMutator Does
+## Features
+- **Streaming mutation engine** – `HttpMutator` emits mutants per JSON path/header/status without storing everything in memory.
+- **Converters included** – `StandardHttpResponse` is the canonical model with adapters for REST Assured (`RestAssuredBidirectionalConverter`) and WebScarab/plain HTTP text.
+- **Selection strategies** – Use `RandomSingleStrategy`, `AllOperatorsStrategy`, or custom `MutationStrategy` implementations to pick mutants.
+- **Statistics ready** – `MutationStatistics` counts operator usage and exports CSV summaries.
+- **JSONL pipeline** – `mutateJsonlToJsonl(...)` streams huge response corpora with optional mutation metadata.
 
-- **Streaming engine** – `EnhancedHttpMutator` processes status codes, headers, and bodies without keeping every mutant in memory. Each JSON path (or header component) yields its own `MutantGroup`.
-- **Rich operator suite** – 38 operators span status-code swaps, header rewrites, structural JSON changes, and scalar replacements. Enable, disable, or re-weight them via `json-mutation.properties`.
-- **Flexible integration** – `StandardHttpResponse` is the canonical input; built-in `BidirectionalConverter` implementations normalize REST Assured objects, WebScarab transcripts, or raw JSON.
-- **Statistics friendly** – `MutationStatistics` records which operators fired per test; `MutationStrategy` implementations (`RandomSingleStrategy`, `AllOperatorsStrategy`, or your own) decide how many mutants to replay.
-- **Reproducible runs** – `RandomUtils.setSeed(...)` pins a global seed so you can rerun the same sequence of mutants.
+## Installation
 
-## Repository Layout
-
-```
-README.md                          ← this overview
-doc/                               ← focused guides (operators, extensions, examples)
-pom.xml                            ← Maven configuration
- src/main/java/es/us/isa/httpmutator/core
-  ├─ HttpMutator.java              ← public facade
-  ├─ HttpMutatorEngine.java        ← internal engine
-  ├─ body / headers / sc           ← all operators and mutators
-  ├─ converter                     ← bidirectional converters (e.g., REST Assured, WebScarab)
-  └─ util / stats / strategy       ← helpers, statistics, selection strategies
-src/main/resources/json-mutation.properties
-                                   ← operator weights/probabilities
-HTTP_Mutator.pdf                   ← background paper (for reference only)
+Maven (core library):
+```xml
+<dependency>
+  <groupId>es.us.isa.httpmutator</groupId>
+  <artifactId>httpmutator-core</artifactId>
+  <version>1.0-SNAPSHOT</version>
+</dependency>
 ```
 
-## Supported HTTP Response Formats & Converters
+Maven (REST Assured integration):
+```xml
+<dependency>
+  <groupId>es.us.isa.httpmutator</groupId>
+  <artifactId>httpmutator-integrations</artifactId>
+  <version>1.0-SNAPSHOT</version>
+</dependency>
+<!-- RestAssured is marked provided; add it if your project does not already depend on it -->
+<dependency>
+  <groupId>io.rest-assured</groupId>
+  <artifactId>rest-assured</artifactId>
+  <version>5.4.0</version>
+</dependency>
+```
 
-All components expect a `StandardHttpResponse` (status code, headers map, Jackson `JsonNode` body). Use the converters below to get there:
-
-| Source format | Converter | Notes |
-| --- | --- | --- |
-| Already-normalized JSON | `StandardHttpResponse.fromJson(String)` or `.fromJsonNode(JsonNode)` | Ensure the JSON object contains `\"Status Code\"`, `\"Headers\"`, and `\"Body\"`. |
-| REST Assured `io.restassured.response.Response` | `RestAssuredBidirectionalConverter` | Parses headers/body and can rebuild `Response` instances for replay. |
-| WebScarab/plain HTTP text | `WebScarabBidirectionalConverter` | Reads HTTP wire format (status line + headers + body) and recreates it from a `StandardHttpResponse`. |
-
-Implement `BidirectionalConverter<T>` if you need additional adapters (e.g., custom client SDKs).
+Or build from source:
+```bash
+mvn clean package
+```
 
 ## Quick Start
 
-1. **Build & test**
-   ```bash
-   mvn clean package
-   mvn test
-   ```
-   Requires Maven 3.8+ and JDK 8+ (the compiler target is 1.8).
+```java
+import com.fasterxml.jackson.databind.ObjectMapper;
+import es.us.isa.httpmutator.core.HttpMutator;
+import es.us.isa.httpmutator.core.model.StandardHttpResponse;
+import es.us.isa.httpmutator.core.strategy.MutationStrategy;
+import es.us.isa.httpmutator.core.strategy.RandomSingleStrategy;
+import es.us.isa.httpmutator.core.util.RandomUtils;
 
-2. **Normalize and mutate a response**
-   ```java
-   HttpMutator mutator = new HttpMutator();
-   // Convert whichever format you have into the canonical StandardHttpResponse
-   RestAssuredBidirectionalConverter converter = new RestAssuredBidirectionalConverter();
-   Response restAssuredResponse = RestAssured.given()
-       .baseUri("http://localhost:8080")
-       .get("/item/1");
-   StandardHttpResponse response = converter.toStandardResponse(restAssuredResponse);
+import java.util.Map;
 
-   // Reproduce runs by fixing the seed
-   RandomUtils.setSeed(12345L);
+public class BasicExample {
+    public static void main(String[] args) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        StandardHttpResponse response = StandardHttpResponse.of(
+                200,
+                Map.of("content-type", "application/json"),
+                mapper.readTree("{\"id\":1,\"name\":\"book\"}")
+        );
 
-   MutationStrategy selector = new RandomSingleStrategy();
-   mutator.mutate(response, group ->
-       selector.selectMutants(group).forEach(mutant ->
-           System.out.printf("%s via %s -> %s%n",
-               mutant.getOriginalJsonPath(),
-               mutant.getOperatorClassName(),
-               mutant.getMutatedNodeAsString())
-       )
-   );
-   ```
-   Lower the probability argument (e.g., `0.6`) if you want fewer mutations per traversal.
+        HttpMutator mutator = new HttpMutator(1234L); // seeds RandomUtils
+        MutationStrategy selector = new RandomSingleStrategy();
 
-3. **Track statistics or stream to JSONL**
-   ```java
-   MutationStatistics stats = MutationStatistics.getInstance();
-   mutator.mutate(response, group -> stats.recordBatch("sample-test", group.getMutants()));
-   stats.exportGlobalCsv(Path.of("target/mutation-global.csv"));
-   stats.clear(); // reset counters before another experiment
+        mutator.mutate(response, group ->
+                selector.selectMutants(group).forEach(mutant ->
+                        System.out.printf("%s via %s -> %s%n",
+                                mutant.getOriginalJsonPath(),
+                                mutant.getOperatorClassName(),
+                                mutant.getMutatedNodeAsString())
+                )
+        );
 
-   // Stream JSONL → JSONL with a strategy
-   try (Reader in = Files.newBufferedReader(Path.of(\"baseline.jsonl\"));\n        Writer out = Files.newBufferedWriter(Path.of(\"mutants.jsonl\"))) {\n       mutator.mutateJsonlToJsonl(in, out, new RandomSingleStrategy());\n   }\n    ```
-   ```
-
-## Working With Mutations
-
-- `json-mutation.properties` controls which components are enabled (`operator.sc.enabled`, `operator.header.enabled`, `operator.body.enabled`), how often each mutator fires (`operator.value.string.prob`, etc.), and the ranges/deltas used by replacement operators.
-- Docs for specific topics:
-  - [`doc/mutation-operators.md`](doc/mutation-operators.md) – operator catalog (apply conditions and effects).
-  - [`doc/strategies-and-stats.md`](doc/strategies-and-stats.md) – seeds, selection strategies, and counters.
-  - [`doc/extending-httpmutator.md`](doc/extending-httpmutator.md) – adding operators, tweaking configuration, wiring new converters.
-  - [`doc/end-to-end-example.md`](doc/end-to-end-example.md) – complete scenario: start a REST API, capture a response, mutate it, and compute scores.
-
-Bring your own scoring logic by combining `MutantGroup`s with existing regression tests, contract checkers, or fuzzing harnesses. Use the TODO placeholders in the docs to capture organisation-specific rules so contributors know what remains to be filled in.
-
-## Flow at a Glance
-
+        // Reset randomness if you want non-deterministic runs later
+        RandomUtils.clearSeed();
+    }
+}
 ```
-Source response (REST Assured / WebScarab / JSON)
-          │
-          │  BidirectionalConverter (RestAssuredBidirectionalConverter, WebScarabBidirectionalConverter, or custom)
-          ▼
-    StandardHttpResponse
-          │
-  │  HttpMutator → HttpMutatorEngine (uses operator weights + RandomUtils seed)
-          ▼
-      MutantGroup stream
-          │
-          │  MutationStrategy (selects mutants to replay)
-          ▼
-      Replayed mutants → MutationStatistics (counts/export/reset)
-```
+
+## Core Concepts
+- `StandardHttpResponse` – canonical response (`"Status Code"`, `"Headers"`, `"Body"`).
+- `Mutant` / `MutantGroup` – one mutated response and the batch of mutants for a given path.
+- `MutationStrategy` – chooses which mutants to execute (`RandomSingleStrategy`, `AllOperatorsStrategy`, or custom).
+- `BidirectionalConverter` – adapters to/from external response types.
+- `json-mutation.properties` – operator toggles, weights, and ranges.
+
+See the docs for deeper dives:
+- [`docs/restassured-integration.md`](docs/restassured-integration.md)
+- [`docs/extending-httpmutator.md`](docs/extending-httpmutator.md)
+- [`docs/output-and-reporting.md`](docs/output-and-reporting.md)
+
+## Limitations / Notes
+- The RestAssured filter is single-threaded and keeps in-memory interaction logs; use one filter instance per test run.
+- Mutation probabilities and ranges are driven entirely by `json-mutation.properties`; hot changes apply only after re-instantiating mutators.
+- `mutateJsonlToJsonl` expects each line to contain `"Status Code"`, `"Headers"`, and `"Body"`; non-object bodies must be plain JSON values.

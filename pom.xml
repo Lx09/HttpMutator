@@ -4,7 +4,7 @@
 
     <groupId>es.us.isa.httpmutator</groupId>
     <artifactId>httpmutator</artifactId>
-    <name>HTTPMutator</name>
+    <name>HttpMutator</name>
     <version>1.0-SNAPSHOT</version>
     <description>A Java library for mutating HTTP response.</description>
     <packaging>pom</packaging>
@@ -12,6 +12,7 @@
     <modules>
         <module>httpmutator-integrations</module>
         <module>httpmutator-core</module>
+        <module>httpmutator-examples</module>
     </modules>
 
     <properties>

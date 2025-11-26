@@ -80,7 +80,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
      * Creates a new filter with default seed, strategy, and report directory.
      */
     public HttpMutatorRestAssuredFilter() {
-        this(42L, new AllOperatorsStrategy(), defaultReportDir(), OriginalAssertionFailurePolicy.DISCARD);
+        this(42L, new AllOperatorsStrategy(), defaultReportDir(), OriginalAssertionFailurePolicy.THROW);
     }
 
     static Path defaultReportDir() {
@@ -389,7 +389,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
      * @throws ConversionException if conversion from RestAssured {@link Response} to
      *                             {@link StandardHttpResponse} fails.
      */
-    public void addAssertionsForLastRequest(Consumer<ValidatableResponse> assertions) throws ConversionException {
+    public void addAssertionsForLastRequest(Consumer<ValidatableResponse> assertions) {
         if (lastResponse == null || lastInteractionIndex < 0) {
             throw new IllegalStateException(
                     "No response captured yet. Make sure a RestAssured request was executed " +
@@ -405,7 +405,12 @@ public class HttpMutatorRestAssuredFilter implements Filter {
 
         // 1) Convert the last response into StandardHttpResponse (may throw ConversionException)
         StandardHttpResponse stdResponse =
-                RestAssuredBidirectionalConverter.INSTANCE.toStandardResponse(lastResponse);
+                null;
+        try {
+            stdResponse = RestAssuredBidirectionalConverter.INSTANCE.toStandardResponse(lastResponse);
+        } catch (ConversionException e) {
+            throw new RuntimeException(e);
+        }
         interaction.setOriginalStandardResponse(stdResponse);
         interaction.setAssertions(assertions);
 
