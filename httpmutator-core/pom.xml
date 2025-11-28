@@ -101,12 +101,12 @@
                         <configuration>
                             <archive>
                                 <manifest>
-                                    <mainClass>es.us.isa.jsonmutator.JsonMutator</mainClass>
+                                    <mainClass>es.us.isa.httpmutator.core.HttpMutatorCli</mainClass>
                                     <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
                                     <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
                                 </manifest>
                             </archive>
-                            <finalName>jsonmutator</finalName>
+                            <finalName>httpmutator</finalName>
                             <appendAssemblyId>false</appendAssemblyId>
                             <descriptorRefs>
                                 <descriptorRef>jar-with-dependencies</descriptorRef>
