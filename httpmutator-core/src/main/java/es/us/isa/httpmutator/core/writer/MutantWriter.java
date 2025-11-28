@@ -4,6 +4,8 @@ import es.us.isa.httpmutator.core.model.HttpExchange;
 import es.us.isa.httpmutator.core.model.Mutant;
 import es.us.isa.httpmutator.core.model.StandardHttpResponse;
 
+import java.io.Closeable;
+import java.io.Flushable;
 import java.io.IOException;
 
 /**
@@ -19,7 +21,7 @@ import java.io.IOException;
  *     <li>The {@link Mutant} metadata describing which mutator/operator was applied</li>
  * </ul>
  */
-public interface MutantWriter {
+public interface MutantWriter extends Flushable, Closeable {
 
     /**
      * Writes a single mutated response associated with the original exchange.

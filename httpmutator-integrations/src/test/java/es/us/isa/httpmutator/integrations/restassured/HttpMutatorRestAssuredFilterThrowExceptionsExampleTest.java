@@ -62,32 +62,17 @@ public class HttpMutatorRestAssuredFilterThrowExceptionsExampleTest {
         RestAssured.port = wireMockServer.port();
 
         // Create the global filter instance used by all tests
-        filter = new HttpMutatorRestAssuredFilter(42L, new AllOperatorsStrategy(), defaultReportDir(), HttpMutatorRestAssuredFilter.OriginalAssertionFailurePolicy.THROW);
+        filter = new HttpMutatorRestAssuredFilter(42L, new AllOperatorsStrategy(), defaultReportDir(), "mutants-throw-assert-error", HttpMutatorRestAssuredFilter.OriginalAssertionFailurePolicy.THROW);
         RestAssured.filters(filter);
     }
 
     @AfterAll
     static void teardown() {
         // Run mutation testing over all globally recorded interactions
-        MutationSummary summary = filter.runAllMutations();
-        assertNotNull(summary, "MutationSummary must not be null");
-
-        // Print a human-readable summary for developers
-        System.out.println("=== HttpMutator Summary ===");
-        System.out.println("Total observed: " + summary.getTotalObservedRequests());
-        System.out.println("With assertions: " + summary.getTotalRequestsWithAssertions());
-        System.out.println("Discarded (no assertions): " + summary.getDiscardedNoAssertions());
-        System.out.println("Discarded (original assertion failed): " + summary.getDiscardedOriginalAssertionFailed());
-        System.out.println("Mutation executed requests: " + summary.getMutationExecutedRequests());
-        System.out.println("Total mutants: " + summary.getTotalMutants());
-        System.out.println("Killed mutants: " + summary.getKilledMutants());
-        System.out.println("Overall mutation score: " + summary.getOverallMutationScore());
-        System.out.println("--- Per-request results ---");
-
+        MutationSummary summary = filter.runAllMutationsAndPrintSummary();
         List<RequestMutationResult> results = summary.getPerRequestResults();
-        for (RequestMutationResult r : results) {
-            System.out.printf("  %s -> status=%s, msg=%s, total=%d, killed=%d, score=%.2f%n", r.getLabel(), r.getStatus(), r.getMessage(), r.getTotalMutants(), r.getKilledMutants(), r.getMutationScore());
-        }
+
+        assertNotNull(summary, "MutationSummary must not be null");
 
         // Global expectations:
         // We invoked 5 requests in 5 separate tests.

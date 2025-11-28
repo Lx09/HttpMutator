@@ -3,6 +3,7 @@ package es.us.isa.httpmutator.integrations.restassured;
 import es.us.isa.httpmutator.core.HttpMutator;
 import es.us.isa.httpmutator.core.converter.ConversionException;
 import es.us.isa.httpmutator.core.model.StandardHttpResponse;
+import es.us.isa.httpmutator.core.reporter.CsvReporter;
 import es.us.isa.httpmutator.core.strategy.AllOperatorsStrategy;
 import es.us.isa.httpmutator.core.strategy.MutationStrategy;
 import es.us.isa.httpmutator.core.util.RandomUtils;
@@ -13,6 +14,7 @@ import io.restassured.response.ValidatableResponse;
 import io.restassured.specification.FilterableRequestSpecification;
 import io.restassured.specification.FilterableResponseSpecification;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -38,22 +40,31 @@ import java.util.function.Consumer;
 public class HttpMutatorRestAssuredFilter implements Filter {
 
     private final HttpMutator httpMutator;
-    private final MutationStrategy mutationStrategy;
     private final Path reportDir;
 
-    /** Global counter for assigning stable labels like "request-0", "request-1", ... */
+    /**
+     * Global counter for assigning stable labels like "request-0", "request-1", ...
+     */
     private static final AtomicInteger GLOBAL_REQUEST_INDEX = new AtomicInteger(0);
 
-    /** All observed interactions, in order. */
+    /**
+     * All observed interactions, in order.
+     */
     private final List<RecordedInteraction> recordedInteractions = new ArrayList<>();
 
-    /** The last observed RestAssured Response (used by addAssertionsForLastRequest). */
+    /**
+     * The last observed RestAssured Response (used by addAssertionsForLastRequest).
+     */
     private Response lastResponse;
 
-    /** Index in {@link #recordedInteractions} of the last observed interaction. */
+    /**
+     * Index in {@link #recordedInteractions} of the last observed interaction.
+     */
     private int lastInteractionIndex = -1;
 
-    /** How to handle original assertion failures. */
+    /**
+     * How to handle original assertion failures.
+     */
     private final OriginalAssertionFailurePolicy originalAssertionFailurePolicy;
 
     /**
@@ -63,16 +74,15 @@ public class HttpMutatorRestAssuredFilter implements Filter {
      * @param mutationStrategy strategy selecting which mutants to execute.
      * @param reportDir        directory where reports could be written (not used directly here, but kept for future extensions).
      */
-    public HttpMutatorRestAssuredFilter(
-            long randomSeed,
-            MutationStrategy mutationStrategy,
-            Path reportDir,
-            OriginalAssertionFailurePolicy originalAssertionFailurePolicy
-    ) {
-        this.httpMutator = new HttpMutator();
-        RandomUtils.setSeed(randomSeed);
-        this.mutationStrategy = mutationStrategy;
+    public HttpMutatorRestAssuredFilter(long randomSeed, MutationStrategy mutationStrategy, Path reportDir, String reportName, OriginalAssertionFailurePolicy originalAssertionFailurePolicy) {
         this.reportDir = reportDir;
+        try {
+            Files.createDirectories(reportDir);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        this.httpMutator = new HttpMutator(randomSeed).withMutationStrategy(mutationStrategy).addReporter(new CsvReporter(reportDir.resolve(reportName + ".csv")));
         this.originalAssertionFailurePolicy = originalAssertionFailurePolicy;
     }
 
@@ -80,7 +90,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
      * Creates a new filter with default seed, strategy, and report directory.
      */
     public HttpMutatorRestAssuredFilter() {
-        this(42L, new AllOperatorsStrategy(), defaultReportDir(), OriginalAssertionFailurePolicy.THROW);
+        this(42L, new AllOperatorsStrategy(), defaultReportDir(), "mutants-csv-reporter", OriginalAssertionFailurePolicy.THROW);
     }
 
     static Path defaultReportDir() {
@@ -91,13 +101,21 @@ public class HttpMutatorRestAssuredFilter implements Filter {
      * Internal status of how a recorded request was ultimately treated.
      */
     public enum RequestStatus {
-        /** Request was observed but has not yet been processed further. */
+        /**
+         * Request was observed but has not yet been processed further.
+         */
         OBSERVED,
-        /** Request was discarded because no assertions were ever provided. */
+        /**
+         * Request was discarded because no assertions were ever provided.
+         */
         DISCARDED_NO_ASSERTIONS,
-        /** Request was discarded because the original assertions failed. */
+        /**
+         * Request was discarded because the original assertions failed.
+         */
         DISCARDED_ORIGINAL_ASSERTION_FAILED,
-        /** Mutation testing was executed for this request. */
+        /**
+         * Mutation testing was executed for this request.
+         */
         MUTATION_EXECUTED
     }
 
@@ -105,8 +123,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
      * Internal discard categories, used for statistics and diagnostics.
      */
     public enum DiscardReason {
-        NO_ASSERTIONS_PROVIDED,
-        ORIGINAL_ASSERTION_FAILED
+        NO_ASSERTIONS_PROVIDED, ORIGINAL_ASSERTION_FAILED
     }
 
     /**
@@ -204,11 +221,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
         private final int totalMutants;
         private final int killedMutants;
 
-        public RequestMutationResult(String label,
-                                     RequestStatus status,
-                                     String message,
-                                     int totalMutants,
-                                     int killedMutants) {
+        public RequestMutationResult(String label, RequestStatus status, String message, int totalMutants, int killedMutants) {
             this.label = label;
             this.status = status;
             this.message = message;
@@ -255,8 +268,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
      * </ul>
      */
     public enum OriginalAssertionFailurePolicy {
-        DISCARD,
-        THROW
+        DISCARD, THROW
     }
 
     /**
@@ -273,14 +285,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
         private final int totalMutants;
         private final int killedMutants;
 
-        public MutationSummary(List<RequestMutationResult> perRequestResults,
-                               int totalObservedRequests,
-                               int totalRequestsWithAssertions,
-                               int discardedNoAssertions,
-                               int discardedOriginalAssertionFailed,
-                               int mutationExecutedRequests,
-                               int totalMutants,
-                               int killedMutants) {
+        public MutationSummary(List<RequestMutationResult> perRequestResults, int totalObservedRequests, int totalRequestsWithAssertions, int discardedNoAssertions, int discardedOriginalAssertionFailed, int mutationExecutedRequests, int totalMutants, int killedMutants) {
             this.perRequestResults = perRequestResults;
             this.totalObservedRequests = totalObservedRequests;
             this.totalRequestsWithAssertions = totalRequestsWithAssertions;
@@ -342,9 +347,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
      * via {@link #addAssertionsForLastRequest(Consumer)}.</p>
      */
     @Override
-    public Response filter(FilterableRequestSpecification requestSpec,
-                           FilterableResponseSpecification responseSpec,
-                           FilterContext ctx) {
+    public Response filter(FilterableRequestSpecification requestSpec, FilterableResponseSpecification responseSpec, FilterContext ctx) {
 
         // Let RestAssured perform the actual HTTP call
         Response response = ctx.next(requestSpec, responseSpec);
@@ -391,10 +394,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
      */
     public void addAssertionsForLastRequest(Consumer<ValidatableResponse> assertions) {
         if (lastResponse == null || lastInteractionIndex < 0) {
-            throw new IllegalStateException(
-                    "No response captured yet. Make sure a RestAssured request was executed " +
-                            "before calling addAssertionsForLastRequest."
-            );
+            throw new IllegalStateException("No response captured yet. Make sure a RestAssured request was executed " + "before calling addAssertionsForLastRequest.");
         }
         if (assertions == null) {
             throw new IllegalStateException("Assertions must not be null");
@@ -404,8 +404,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
         RecordedInteraction interaction = recordedInteractions.get(lastInteractionIndex);
 
         // 1) Convert the last response into StandardHttpResponse (may throw ConversionException)
-        StandardHttpResponse stdResponse =
-                null;
+        StandardHttpResponse stdResponse = null;
         try {
             stdResponse = RestAssuredBidirectionalConverter.INSTANCE.toStandardResponse(lastResponse);
         } catch (ConversionException e) {
@@ -490,8 +489,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
             RequestMutationResult result;
 
             // If no assertions were ever provided, mark as discarded for that reason
-            if (interaction.getAssertions() == null &&
-                    interaction.getStatus() == RequestStatus.OBSERVED) {
+            if (interaction.getAssertions() == null && interaction.getStatus() == RequestStatus.OBSERVED) {
 
                 interaction.setStatus(RequestStatus.DISCARDED_NO_ASSERTIONS);
                 interaction.setDiscardReason(DiscardReason.NO_ASSERTIONS_PROVIDED);
@@ -502,32 +500,19 @@ public class HttpMutatorRestAssuredFilter implements Filter {
             switch (status) {
                 case DISCARDED_NO_ASSERTIONS:
                     discardedNoAssertions++;
-                    result = new RequestMutationResult(
-                            interaction.getLabel(),
-                            RequestStatus.DISCARDED_NO_ASSERTIONS,
-                            interaction.getMessage(),
-                            0,
-                            0
-                    );
+                    result = new RequestMutationResult(interaction.getLabel(), RequestStatus.DISCARDED_NO_ASSERTIONS, interaction.getMessage(), 0, 0);
                     break;
 
                 case DISCARDED_ORIGINAL_ASSERTION_FAILED:
                     discardedOriginalAssertionFailed++;
-                    result = new RequestMutationResult(
-                            interaction.getLabel(),
-                            RequestStatus.DISCARDED_ORIGINAL_ASSERTION_FAILED,
-                            interaction.getMessage(),
-                            0,
-                            0
-                    );
+                    result = new RequestMutationResult(interaction.getLabel(), RequestStatus.DISCARDED_ORIGINAL_ASSERTION_FAILED, interaction.getMessage(), 0, 0);
                     break;
 
                 case OBSERVED:
                 case MUTATION_EXECUTED:
                 default:
                     // Only run mutation if we have both a standard response and assertions
-                    if (interaction.getAssertions() != null &&
-                            interaction.getOriginalStandardResponse() != null) {
+                    if (interaction.getAssertions() != null && interaction.getOriginalStandardResponse() != null) {
 
                         RequestMutationResult mutationResult = runMutationForRecord(interaction);
                         mutationExecuted++;
@@ -540,13 +525,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
                         interaction.setDiscardReason(DiscardReason.NO_ASSERTIONS_PROVIDED);
                         interaction.setMessage("Request observed but missing assertions or standard response; skipping mutation.");
                         discardedNoAssertions++;
-                        result = new RequestMutationResult(
-                                interaction.getLabel(),
-                                interaction.getStatus(),
-                                interaction.getMessage(),
-                                0,
-                                0
-                        );
+                        result = new RequestMutationResult(interaction.getLabel(), interaction.getStatus(), interaction.getMessage(), 0, 0);
                     }
                     break;
             }
@@ -554,16 +533,65 @@ public class HttpMutatorRestAssuredFilter implements Filter {
             perRequestResults.add(result);
         }
 
-        return new MutationSummary(
-                perRequestResults,
-                totalObserved,
-                totalWithAssertions,
-                discardedNoAssertions,
-                discardedOriginalAssertionFailed,
-                mutationExecuted,
-                totalMutantsOverall,
-                killedMutantsOverall
-        );
+        try {
+            httpMutator.close();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        return new MutationSummary(perRequestResults, totalObserved, totalWithAssertions, discardedNoAssertions, discardedOriginalAssertionFailed, mutationExecuted, totalMutantsOverall, killedMutantsOverall);
+    }
+
+    /**
+     * Convenience method that runs mutation for all recorded interactions
+     * and prints a human-readable summary to {@code System.out}.
+     *
+     * @return the {@link MutationSummary} produced by {@link #runAllMutations()}.
+     */
+    public MutationSummary runAllMutationsAndPrintSummary() {
+        MutationSummary summary = runAllMutations();
+        printSummary(summary);
+        return summary;
+    }
+
+    /**
+     * Print a human-readable summary of mutation results to {@code System.out}.
+     *
+     * <p>This is primarily intended for developers to quickly inspect how many
+     * requests were observed, how many were discarded, and basic per-request
+     * mutation scores, without having to parse CSV/JSON reports.</p>
+     *
+     * @param summary the summary to print; if {@code null}, a short message is printed.
+     */
+    public void printSummary(MutationSummary summary) {
+        if (summary == null) {
+            System.out.println("=== HttpMutator Summary ===");
+            System.out.println("Summary is null (no mutations run?).");
+            return;
+        }
+
+        System.out.println("=== HttpMutator Summary ===");
+        System.out.println("Total observed: " + summary.getTotalObservedRequests());
+        System.out.println("With assertions: " + summary.getTotalRequestsWithAssertions());
+        System.out.println("Discarded (no assertions): " + summary.getDiscardedNoAssertions());
+        System.out.println("Discarded (original assertion failed): " + summary.getDiscardedOriginalAssertionFailed());
+        System.out.println("Mutation executed requests: " + summary.getMutationExecutedRequests());
+        System.out.println("Total mutants: " + summary.getTotalMutants());
+        System.out.println("Killed mutants: " + summary.getKilledMutants());
+        System.out.println("Overall mutation score: " + summary.getOverallMutationScore());
+        System.out.println("--- Per-request results ---");
+
+        List<RequestMutationResult> results = summary.getPerRequestResults();
+        for (RequestMutationResult r : results) {
+            System.out.printf(
+                    "  %s -> status=%s, msg=%s, total=%d, killed=%d, score=%.2f%n",
+                    r.getLabel(),
+                    r.getStatus(),
+                    r.getMessage(),
+                    r.getTotalMutants(),
+                    r.getKilledMutants(),
+                    r.getMutationScore()
+            );
+        }
     }
 
     /**
@@ -593,29 +621,24 @@ public class HttpMutatorRestAssuredFilter implements Filter {
         final AtomicInteger killed = new AtomicInteger();
 
         // Delegate to HttpMutator: it will provide a MutantGroup to inspect
-        httpMutator.mutateStream(std, mutantGroup -> {
-            mutationStrategy.selectMutants(mutantGroup).forEach(mutant -> {
-                // Build mutated StandardHttpResponse from the mutated JSON node
-                StandardHttpResponse stdMResp = StandardHttpResponse.fromJsonNode(mutant.getMutatedNode());
+        httpMutator.mutate(std, interaction.label, mutated -> {
+            try {
+                // Convert mutated response back to a RestAssured Response
+                Response raResp = RestAssuredBidirectionalConverter.INSTANCE.fromStandardResponse(mutated);
+                ValidatableResponse valMResp = raResp.then();
+
+                total.incrementAndGet();
 
                 try {
-                    // Convert mutated response back to a RestAssured Response
-                    Response raResp = RestAssuredBidirectionalConverter.INSTANCE.fromStandardResponse(stdMResp);
-                    ValidatableResponse valMResp = raResp.then();
-
-                    total.incrementAndGet();
-
-                    try {
-                        // Apply user assertions; if they fail, we consider the mutant "killed"
-                        assertFunc.accept(valMResp);
-                    } catch (AssertionError | Exception e) {
-                        killed.incrementAndGet();
-                    }
-                } catch (ConversionException e) {
-                    // If conversion fails, skip this mutant but continue processing others
-                    // (we do not increment 'total' in this case).
+                    // Apply user assertions; if they fail, we consider the mutant "killed"
+                    assertFunc.accept(valMResp);
+                } catch (AssertionError | Exception e) {
+                    killed.incrementAndGet();
                 }
-            });
+            } catch (ConversionException e) {
+                // If conversion fails, skip this mutant but continue processing others
+                // (we do not increment 'total' in this case).
+            }
         });
 
         int totalMutants = total.get();
@@ -623,15 +646,8 @@ public class HttpMutatorRestAssuredFilter implements Filter {
 
         interaction.setMutationStats(totalMutants, killedMutants);
         interaction.setStatus(RequestStatus.MUTATION_EXECUTED);
-        interaction.setMessage("Mutation executed on " + totalMutants +
-                " mutants; killed " + killedMutants + ".");
+        interaction.setMessage("Mutation executed on " + totalMutants + " mutants; killed " + killedMutants + ".");
 
-        return new RequestMutationResult(
-                interaction.getLabel(),
-                RequestStatus.MUTATION_EXECUTED,
-                interaction.getMessage(),
-                totalMutants,
-                killedMutants
-        );
+        return new RequestMutationResult(interaction.getLabel(), RequestStatus.MUTATION_EXECUTED, interaction.getMessage(), totalMutants, killedMutants);
     }
 }

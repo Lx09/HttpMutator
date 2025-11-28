@@ -31,7 +31,7 @@ import java.io.Writer;
  * <p>Note: this implementation accumulates all entries in memory. For very large
  * mutation sets, a streaming writer would be required.</p>
  */
-public class HarMutantWriter implements MutantWriter, Flushable, Closeable {
+public class HarMutantWriter implements MutantWriter {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HarConverter converter = new HarConverter();

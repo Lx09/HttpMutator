@@ -13,6 +13,7 @@ import es.us.isa.httpmutator.core.writer.MutantWriter;
 
 import java.io.IOException;
 import java.io.Reader;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -22,20 +23,28 @@ import java.util.function.Consumer;
 /**
  * High-level orchestration class for running HttpMutator.
  */
-public class HttpMutator {
+public class HttpMutator implements AutoCloseable {
 
     private final HttpMutatorEngine engine;
 
-    /** Strategy for selecting which mutants to keep. */
+    /**
+     * Strategy for selecting which mutants to keep.
+     */
     private MutationStrategy strategy;
 
-    /** Optional writers that emit mutated responses. */
+    /**
+     * Optional writers that emit mutated responses.
+     */
     private final List<MutantWriter> writers = new ArrayList<>();
 
-    /** Optional reporters that collect statistics / metrics. */
+    /**
+     * Optional reporters that collect statistics / metrics.
+     */
     private final List<MutantReporter> reporters = new ArrayList<>();
 
-    /** Random seed used by mutation utilities. */
+    /**
+     * Random seed used by mutation utilities.
+     */
     private long randomSeed;
 
     public HttpMutator() {
@@ -102,172 +111,212 @@ public class HttpMutator {
     }
 
     // ===================== core: engine + strategy =====================
-
     private void ensureStrategyConfigured() {
         if (strategy == null) {
-            throw new IllegalStateException("MutationStrategy must be configured via withMutationStrategy(...)");
+            throw new IllegalStateException(
+                    "MutationStrategy must be configured via withMutationStrategy(...)");
         }
     }
 
     /**
-     * Single place that calls engine + strategy and returns each selected mutant.
+     * Core pipeline:
+     * - engine.getAllMutants
+     * - strategy.selectMutants
+     * - build StandardHttpResponse for each mutant
+     * - notify reporters
+     * - invoke extraHandler (per context)
      */
-    private void forEachSelectedMutant(JsonNode responseNode, Consumer<MutantGroup> groupConsumer) {
-        Objects.requireNonNull(responseNode, "responseNode must not be null");
+    private void processExchange(HttpExchange exchange, Consumer<StandardHttpResponse> perMutantConsumer) {
+
+        Objects.requireNonNull(exchange, "exchange must not be null");
         ensureStrategyConfigured();
-        engine.getAllMutants(responseNode, groupConsumer::accept);
+
+        StandardHttpResponse original = exchange.getResponse();
+        JsonNode responseNode = original.toJsonNode();
+
+        try {
+            engine.getAllMutants(responseNode, (MutantGroup group) -> {
+                for (Mutant mutant : strategy.selectMutants(group)) {
+                    JsonNode mutatedNode = mutant.getMutatedNode();
+                    StandardHttpResponse mutated =
+                            StandardHttpResponse.fromJsonNode(mutatedNode);
+
+                    for (MutantWriter writer : writers) {
+                        try {
+                            writer.write(exchange, mutated, mutant);
+                        } catch (IOException e) {
+                            throw new UncheckedIOException(e);
+                        }
+                    }
+
+                    for (MutantReporter reporter : reporters) {
+                        reporter.onMutant(exchange, mutated, mutant);
+                    }
+
+                    if (perMutantConsumer != null) {
+                        perMutantConsumer.accept(mutated);
+                    }
+                }
+            });
+        } catch (UncheckedIOException e) {
+            throw new RuntimeException("I/O error while writing mutated responses", e.getCause());
+        }
     }
+
+    @Override
+    public void close() throws IOException {
+        IOException firstException = null;
+
+        // 1. Close writers
+        for (MutantWriter writer : writers) {
+            try {
+                writer.close();
+            } catch (IOException e) {
+                if (firstException == null) {
+                    firstException = e;
+                }
+            }
+        }
+
+        // 2. Notify reporters
+        for (MutantReporter reporter : reporters) {
+            try {
+                reporter.onFinished();
+            } catch (RuntimeException e) {
+                if (firstException == null) {
+                    firstException = new IOException("Reporter failed: " + e.getMessage(), e);
+                }
+            }
+        }
+
+        // 3. Throw the first exception encountered
+        if (firstException != null) {
+            throw firstException;
+        }
+    }
+
 
     // ===================== Streaming API (reader + writers + reporters) =====================
 
     public void mutateStream(HttpExchangeReader exchangeReader, Reader in) throws IOException {
         Objects.requireNonNull(exchangeReader, "exchangeReader must not be null");
         Objects.requireNonNull(in, "in must not be null");
-        ensureStrategyConfigured();
 
-        exchangeReader.read(in, this::processExchangeStream);
-
-        notifyFinished();
-    }
-
-    private void processExchangeStream(HttpExchange exchange) {
-        StandardHttpResponse original = exchange.getResponse();
-        JsonNode responseNode = original.toJsonNode();
-
-        forEachSelectedMutant(responseNode, group -> {
-            for (Mutant mutant : strategy.selectMutants(group)) {
-                JsonNode mutatedNode = mutant.getMutatedNode();
-                StandardHttpResponse mutated = StandardHttpResponse.fromJsonNode(mutatedNode);
-
-                // writers
-                for (MutantWriter writer : writers) {
-                    try {
-                        writer.write(exchange, mutated, mutant);
-                    } catch (IOException e) {
-                        throw new RuntimeException("Failed to write mutated response", e);
-                    }
-                }
-
-                // reporters
-                for (MutantReporter reporter : reporters) {
-                    reporter.onMutant(exchange, mutated, mutant);
-                }
+        try {
+            exchangeReader.read(in, httpExchange -> processExchange(httpExchange, null));
+        } catch (RuntimeException e) {
+            if (e.getCause() instanceof IOException) {
+                throw (IOException) e.getCause();
             }
-        });
-    }
-
-    private void notifyFinished() throws IOException {
-        for (MutantReporter reporter : reporters) {
-            reporter.onFinished();
+            throw e;
+        } finally {
+            close();
         }
     }
 
-    // ===================== In-memory: StandardHttpResponse → List =====================
+        // ===================== In-memory: StandardHttpResponse → List =====================
 
     public List<StandardHttpResponse> mutate(StandardHttpResponse original) {
+        return mutate(original, "in-memory");
+    }
+
+    public List<StandardHttpResponse> mutate(StandardHttpResponse original, String label) {
         Objects.requireNonNull(original, "original must not be null");
         ensureStrategyConfigured();
 
         List<StandardHttpResponse> results = new ArrayList<>();
-        HttpExchange exchange = new HttpExchange(null, original, "in-memory");
-        JsonNode responseNode = original.toJsonNode();
+        String id = (label == null || label.isEmpty()) ? "in-memory" : label;
+        HttpExchange exchange = new HttpExchange(null, original, id);
 
-        forEachSelectedMutant(responseNode, group -> {
-            for (Mutant mutant : strategy.selectMutants(group)) {
-                StandardHttpResponse mutated =
-                        StandardHttpResponse.fromJsonNode(mutant.getMutatedNode());
-                results.add(mutated);
-
-                for (MutantReporter reporter : reporters) {
-                    reporter.onMutant(exchange, mutated, mutant);
-                }
-            }
-        });
+        processExchange(exchange, results::add);
 
         return results;
     }
 
     // ===================== In-memory: JsonNode → List<JsonNode> =====================
 
-    public List<JsonNode> mutate(JsonNode canonicalResponseNode) {
+    public List<JsonNode> mutate(JsonNode canonicalResponseNode, String label) {
         Objects.requireNonNull(canonicalResponseNode, "canonicalResponseNode must not be null");
         ensureStrategyConfigured();
 
         StandardHttpResponse original =
                 StandardHttpResponse.fromJsonNode(canonicalResponseNode);
-        HttpExchange exchange = new HttpExchange(null, original, "in-memory");
+        String id = resolveIdForJsonNode(canonicalResponseNode, label);
+        HttpExchange exchange = new HttpExchange(null, original, id);
 
         List<JsonNode> results = new ArrayList<>();
 
-        forEachSelectedMutant(canonicalResponseNode, group -> {
-            for (Mutant mutant : strategy.selectMutants(group)) {
-                JsonNode mutatedNode = mutant.getMutatedNode();
-                results.add(mutatedNode);
-
-                StandardHttpResponse mutated =
-                        StandardHttpResponse.fromJsonNode(mutatedNode);
-
-                for (MutantReporter reporter : reporters) {
-                    reporter.onMutant(exchange, mutated, mutant);
-                }
-            }
-        });
+        processExchange(exchange, mutated -> results.add(mutated.toJsonNode()));
 
         return results;
     }
 
+    public List<JsonNode> mutate(JsonNode canonicalResponseNode) {
+        return mutate(canonicalResponseNode, "");
+    }
+
     // ===================== In-memory streaming: StandardHttpResponse =====================
 
-    public void mutate(StandardHttpResponse original,
-                       Consumer<StandardHttpResponse> consumer) {
+    public void mutate(StandardHttpResponse original, String label, Consumer<StandardHttpResponse> consumer) {
 
         Objects.requireNonNull(original, "original must not be null");
         Objects.requireNonNull(consumer, "consumer must not be null");
         ensureStrategyConfigured();
 
-        HttpExchange exchange = new HttpExchange(null, original, "in-memory");
-        JsonNode responseNode = original.toJsonNode();
+        String id = label == null || label.isEmpty() ? "in-memory" : label;
+        HttpExchange exchange = new HttpExchange(null, original, id);
 
-        forEachSelectedMutant(responseNode, group -> {
-            for (Mutant mutant : strategy.selectMutants(group)) {
-                StandardHttpResponse mutated =
-                        StandardHttpResponse.fromJsonNode(mutant.getMutatedNode());
+        processExchange(exchange, consumer);
+    }
 
-                consumer.accept(mutated);
-
-                for (MutantReporter reporter : reporters) {
-                    reporter.onMutant(exchange, mutated, mutant);
-                }
-            }
-        });
+    public void mutate(StandardHttpResponse original, Consumer<StandardHttpResponse> consumer) {
+        mutate(original, "", consumer);
     }
 
     // ===================== In-memory streaming: JsonNode =====================
 
-    public void mutate(JsonNode canonicalResponseNode,
-                       Consumer<JsonNode> consumer) {
+    public void mutate(JsonNode canonicalResponseNode, Consumer<JsonNode> consumer) {
+        mutate(canonicalResponseNode, null, consumer);
+    }
 
+    public void mutate(JsonNode canonicalResponseNode, String label, Consumer<JsonNode> consumer) {
         Objects.requireNonNull(canonicalResponseNode, "canonicalResponseNode must not be null");
         Objects.requireNonNull(consumer, "consumer must not be null");
         ensureStrategyConfigured();
 
+        String id = resolveIdForJsonNode(canonicalResponseNode, label);
         StandardHttpResponse original =
                 StandardHttpResponse.fromJsonNode(canonicalResponseNode);
-        HttpExchange exchange = new HttpExchange(null, original, "in-memory");
+        HttpExchange exchange = new HttpExchange(null, original, id);
 
-        forEachSelectedMutant(canonicalResponseNode, group -> {
-            for (Mutant mutant : strategy.selectMutants(group)) {
-                JsonNode mutatedNode = mutant.getMutatedNode();
+        processExchange(exchange, mutated -> consumer.accept(mutated.toJsonNode()));
+    }
 
-                consumer.accept(mutatedNode);
+    /**
+     * Resolve an identifier for an in-memory JsonNode response.
+     * Priority:
+     * 1) explicitLabel if not null/empty
+     * 2) "id" field inside the JsonNode (if present and non-empty)
+     * 3) fallback "in-memory"
+     */
+    private String resolveIdForJsonNode(JsonNode canonicalResponseNode, String explicitLabel) {
+        // 1) label
+        if (explicitLabel != null && !explicitLabel.isEmpty()) {
+            return explicitLabel;
+        }
 
-                StandardHttpResponse mutated =
-                        StandardHttpResponse.fromJsonNode(mutatedNode);
-
-                for (MutantReporter reporter : reporters) {
-                    reporter.onMutant(exchange, mutated, mutant);
+        // 2) try to read "id" from JsonNode
+        if (canonicalResponseNode != null && canonicalResponseNode.has("id")) {
+            JsonNode idNode = canonicalResponseNode.get("id");
+            if (idNode != null && !idNode.isNull()) {
+                String id = idNode.asText();
+                if (id != null && !id.isEmpty()) {
+                    return id;
                 }
             }
-        });
+        }
+
+        // 3) default value
+        return "in-memory";
     }
 }

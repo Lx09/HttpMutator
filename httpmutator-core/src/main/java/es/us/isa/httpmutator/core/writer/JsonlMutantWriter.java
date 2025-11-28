@@ -27,7 +27,7 @@ import java.util.Objects;
  *     <li>The mutation metadata from {@link Mutant}</li>
  * </ul>
  */
-public class JsonlMutantWriter implements MutantWriter, Flushable, Closeable {
+public class JsonlMutantWriter implements MutantWriter{
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Writer out;
