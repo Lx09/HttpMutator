@@ -14,6 +14,7 @@ import io.restassured.response.ValidatableResponse;
 import io.restassured.specification.FilterableRequestSpecification;
 import io.restassured.specification.FilterableResponseSpecification;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -41,6 +42,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
 
     private final HttpMutator httpMutator;
     private final Path reportDir;
+    private final MutationSummaryCsvReporter reporter;
 
     /**
      * Global counter for assigning stable labels like "request-0", "request-1", ...
@@ -83,6 +85,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
         }
 
         this.httpMutator = new HttpMutator(randomSeed).withMutationStrategy(mutationStrategy).addReporter(new CsvReporter(reportDir.resolve(reportName + ".csv")));
+        this.reporter = new MutationSummaryCsvReporter(reportDir.resolve(reportName + "-assert-summary.csv"));
         this.originalAssertionFailurePolicy = originalAssertionFailurePolicy;
     }
 
@@ -538,7 +541,14 @@ public class HttpMutatorRestAssuredFilter implements Filter {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        return new MutationSummary(perRequestResults, totalObserved, totalWithAssertions, discardedNoAssertions, discardedOriginalAssertionFailed, mutationExecuted, totalMutantsOverall, killedMutantsOverall);
+
+        MutationSummary summary =  new MutationSummary(perRequestResults, totalObserved, totalWithAssertions, discardedNoAssertions, discardedOriginalAssertionFailed, mutationExecuted, totalMutantsOverall, killedMutantsOverall);
+        try {
+            reporter.write(summary);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        return summary;
     }
 
     /**
