@@ -13,6 +13,8 @@ import io.restassured.response.Response;
 import io.restassured.response.ValidatableResponse;
 import io.restassured.specification.FilterableRequestSpecification;
 import io.restassured.specification.FilterableResponseSpecification;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -43,6 +45,8 @@ public class HttpMutatorRestAssuredFilter implements Filter {
     private final HttpMutator httpMutator;
     private final Path reportDir;
     private final MutationSummaryCsvReporter reporter;
+
+    private static final Logger log = LogManager.getLogger(HttpMutatorRestAssuredFilter.class);
 
     /**
      * Global counter for assigning stable labels like "request-0", "request-1", ...
@@ -484,6 +488,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
         for (RecordedInteraction interaction : recordedInteractions) {
             if (interaction.getAssertions() != null) {
                 totalWithAssertions++;
+                log.debug("Request Id = {} has assertions attached.", interaction.getLabel());
             }
         }
 
@@ -638,6 +643,7 @@ public class HttpMutatorRestAssuredFilter implements Filter {
                 ValidatableResponse valMResp = raResp.then();
 
                 total.incrementAndGet();
+                log.debug("Applying assertions to mutant for request Id = {}, mutant #{}.", interaction.getLabel(), total.get());
 
                 try {
                     // Apply user assertions; if they fail, we consider the mutant "killed"
