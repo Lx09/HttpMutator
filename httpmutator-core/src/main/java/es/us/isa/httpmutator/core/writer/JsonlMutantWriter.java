@@ -91,7 +91,7 @@ public class JsonlMutantWriter implements MutantWriter{
         // 2) Ensure we always serialize an ObjectNode
         final ObjectNode lineObject;
         if (canonical instanceof ObjectNode) {
-            lineObject = ((ObjectNode) canonical).deepCopy();
+            lineObject = (ObjectNode) canonical;
         } else {
             lineObject = objectMapper.createObjectNode();
             lineObject.set("Body", canonical);

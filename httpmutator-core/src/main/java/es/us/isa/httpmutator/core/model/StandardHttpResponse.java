@@ -3,6 +3,8 @@
 // ========================================
 package es.us.isa.httpmutator.core.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -21,6 +23,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
  * "Body": {...}
  * }
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class StandardHttpResponse {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -136,14 +139,17 @@ public class StandardHttpResponse {
     /**
      * Validate if it's a valid input format for status code mutation
      */
+    @JsonIgnore
     public boolean isValidForStatusCodeMutator() {
         return 200 <= statusCode && statusCode < 600;
     }
 
+    @JsonIgnore
     public boolean isValidForBodyMutator() {
         return body != null;
     }
 
+    @JsonIgnore
     public boolean isValidForHeadersMutator() {
         return headers != null && !headers.isEmpty();
     }
