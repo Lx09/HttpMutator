@@ -2,6 +2,7 @@ package es.us.isa.httpmutator.core.writer;
 
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonGenerator.Feature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -17,59 +18,72 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.Objects;
 
 /**
- * A MutantWriter that writes mutated responses as sharded
- * Zstandard-compressed JSONL files (*.jsonl.zst).
+ * Sharded, Zstandard-compressed JSONL MutantWriter.
  *
- * <p>Each line is one JSON object. Only the field {@code _hm_original_id}
- * is attached as metadata.</p>
- *
- * <p>Shard files are written to a temporary name first (suffix ".tmp"),
- * and atomically renamed to the final name when the shard is closed.</p>
- *
- * <p>This implementation uses streaming JSON output (JsonGenerator) to avoid
- * building a huge intermediate String per line (writeValueAsString), which
- * significantly reduces GC pressure and improves throughput for large bodies.</p>
+ * Key properties (final version):
+ *  - Writes JSONL as UTF-8 bytes via JsonGenerator (no writeValueAsString per row).
+ *  - Avoids deep-copy of huge JSON trees: if canonical is ObjectNode, we stream its fields.
+ *  - Appends only "_hm_original_id" to each line.
+ *  - Writes to "*.tmp" first and then moves to final name on shard commit.
+ *  - Uses a large BufferedOutputStream to improve throughput on large records.
+ *  - Maintains an approximate "uncompressed bytes" counter (bytes emitted to generator),
+ *    allowing rotation by bytes as well as by line count.
  */
-public class ShardedZstdJsonlMutantWriter implements MutantWriter {
+public final class ShardedZstdJsonlMutantWriter implements MutantWriter {
 
-    private final ObjectMapper objectMapper;
-    private final JsonFactory jsonFactory;
+    // -----------------------------
+    // Defaults tuned for throughput
+    // -----------------------------
+    public static final long DEFAULT_MAX_LINES_PER_SHARD = 50_000;     // large records => smaller shards
+    public static final long DEFAULT_MAX_UNCOMPRESSED_BYTES = 1L << 30; // 1 GiB (approx)
+    public static final int  DEFAULT_ZSTD_LEVEL = 3;                  // throughput-friendly
+    public static final int  DEFAULT_BUFFER_BYTES = 1 << 20;          // 1 MiB buffer
+
+    private final ObjectMapper mapper;
+    private final JsonFactory factory;
 
     private final Path outputDir;
     private final String shardPrefix;
 
-    /** Sharding limits */
     private final long maxLinesPerShard;
     private final long maxUncompressedBytesApprox;
-
-    /** Zstd compression level */
     private final int zstdLevel;
+    private final int bufferBytes;
 
-    /** Current shard state */
     private int shardIndex = 0;
     private long currentLines = 0;
 
-    /**
-     * Note: with streaming we cannot cheaply know exact "uncompressed bytes".
-     * We maintain an approximate counter based on bytes written to the generator
-     * (tracked in CountingOutputStream).
-     */
+    // counts bytes emitted to JsonGenerator (pre-compression bytes), approximates "uncompressed size"
     private long currentUncompressedBytes = 0;
 
-    /** Current shard streams */
-    private OutputStream fileOut;          // raw file output stream
-    private ZstdOutputStream zstdOut;      // compression stream
-    private CountingOutputStream countOut; // counts bytes written into zstd stream (pre-compression)
-    private JsonGenerator jsonGen;         // streaming JSON writer
+    private Path currentTmpPath;
+    private Path currentFinalPath;
+
+    private OutputStream fileOut;
+    private ZstdOutputStream zstdOut;
+    private CountingOutputStream countOut;
+    private JsonGenerator gen;
 
     private boolean closed = false;
 
-    /** Current shard paths */
-    private Path currentTmpPath;
-    private Path currentFinalPath;
+    // -----------------------------
+    // Constructors
+    // -----------------------------
+    public ShardedZstdJsonlMutantWriter(Path outputDir, String shardPrefix) throws IOException {
+        this(
+                outputDir,
+                shardPrefix,
+                DEFAULT_MAX_LINES_PER_SHARD,
+                DEFAULT_MAX_UNCOMPRESSED_BYTES,
+                DEFAULT_ZSTD_LEVEL,
+                DEFAULT_BUFFER_BYTES
+        );
+    }
 
     public ShardedZstdJsonlMutantWriter(
             Path outputDir,
@@ -78,33 +92,45 @@ public class ShardedZstdJsonlMutantWriter implements MutantWriter {
             long maxUncompressedBytesApprox,
             int zstdLevel
     ) throws IOException {
-
-        this.outputDir = Objects.requireNonNull(outputDir, "outputDir must not be null");
-        this.shardPrefix = Objects.requireNonNull(shardPrefix, "shardPrefix must not be null");
-        this.maxLinesPerShard = maxLinesPerShard;
-        this.maxUncompressedBytesApprox = maxUncompressedBytesApprox;
-        this.zstdLevel = zstdLevel;
-
-        this.objectMapper = new ObjectMapper();
-        this.jsonFactory = objectMapper.getFactory();
-
-        Files.createDirectories(outputDir);
-        openNextShard();
-    }
-
-    /**
-     * Convenience constructor with conservative defaults.
-     */
-    public ShardedZstdJsonlMutantWriter(Path outputDir, String shardPrefix) throws IOException {
         this(
                 outputDir,
                 shardPrefix,
-                500_000,   // lines per shard
-                1L << 30,  // ~1 GB uncompressed (approx)
-                6          // zstd compression level
+                maxLinesPerShard,
+                maxUncompressedBytesApprox,
+                zstdLevel,
+                DEFAULT_BUFFER_BYTES
         );
     }
 
+    public ShardedZstdJsonlMutantWriter(
+            Path outputDir,
+            String shardPrefix,
+            long maxLinesPerShard,
+            long maxUncompressedBytesApprox,
+            int zstdLevel,
+            int bufferBytes
+    ) throws IOException {
+        this.outputDir = Objects.requireNonNull(outputDir, "outputDir must not be null");
+        this.shardPrefix = Objects.requireNonNull(shardPrefix, "shardPrefix must not be null");
+        if (maxLinesPerShard <= 0) throw new IllegalArgumentException("maxLinesPerShard must be > 0");
+        if (maxUncompressedBytesApprox <= 0) throw new IllegalArgumentException("maxUncompressedBytesApprox must be > 0");
+        if (bufferBytes <= 0) throw new IllegalArgumentException("bufferBytes must be > 0");
+
+        this.maxLinesPerShard = maxLinesPerShard;
+        this.maxUncompressedBytesApprox = maxUncompressedBytesApprox;
+        this.zstdLevel = zstdLevel;
+        this.bufferBytes = bufferBytes;
+
+        this.mapper = new ObjectMapper();
+        this.factory = mapper.getFactory();
+
+        Files.createDirectories(this.outputDir);
+        openNextShard();
+    }
+
+    // -----------------------------
+    // MutantWriter implementation
+    // -----------------------------
     @Override
     public void write(HttpExchange exchange,
                       StandardHttpResponse mutatedResponse,
@@ -114,42 +140,74 @@ public class ShardedZstdJsonlMutantWriter implements MutantWriter {
             throw new IOException("ShardedZstdJsonlMutantWriter is already closed");
         }
 
-        // 1) Convert response to canonical JsonNode
-        JsonNode canonical = mutatedResponse.toJsonNode();
+        final JsonNode canonical = mutatedResponse.toJsonNode();
         if (canonical == null || canonical.isNull()) {
             return;
         }
 
-        // 2) Ensure ObjectNode (same semantics as your previous code)
-        final ObjectNode lineObject;
-        if (canonical instanceof ObjectNode) {
-            lineObject = (ObjectNode) canonical;
-        } else {
-            lineObject = objectMapper.createObjectNode();
-            lineObject.set("Body", canonical);
-        }
-
-        // 3) Attach ONLY _hm_original_id
-        String originalId = exchange.getId();
-        if (originalId != null) {
-            lineObject.put("_hm_original_id", originalId);
-        }
-
-        // 4) Streaming write: JSON object + '\n' (JSONL)
-        //    IMPORTANT: do NOT pretty-print; JSONL requires single-line objects.
-        objectMapper.writeValue(jsonGen, lineObject);
-        jsonGen.writeRaw('\n');
+        // JSONL: exactly one JSON object per line, followed by '\n'
+        writeOneJsonlObject(exchange, canonical);
 
         currentLines++;
-        // update byte counter from CountingOutputStream (pre-compression bytes)
-        currentUncompressedBytes = countOut.getCount();
+        currentUncompressedBytes = countOut.getCount(); // bytes emitted so far in this shard
 
-        // 5) Rotate shard if needed
+        // Rotate AFTER writing (so a single huge record is allowed; it just triggers a rotate right after)
         if (shouldRotateShard()) {
             rotateShard();
         }
     }
 
+    @Override
+    public void flush() throws IOException {
+        if (closed) return;
+        if (gen != null) gen.flush();
+        if (zstdOut != null) zstdOut.flush();
+        if (fileOut != null) fileOut.flush();
+    }
+
+    @Override
+    public void close() throws IOException {
+        if (closed) return;
+        closed = true;
+        closeCurrentShardAndCommit();
+    }
+
+    // -----------------------------
+    // Core writing logic (no deep-copy)
+    // -----------------------------
+    private void writeOneJsonlObject(HttpExchange exchange, JsonNode canonical) throws IOException {
+        gen.writeStartObject();
+
+        if (canonical instanceof ObjectNode) {
+            // Stream existing top-level fields without copying the tree
+            Iterator<Map.Entry<String, JsonNode>> it = canonical.fields();
+            while (it.hasNext()) {
+                Map.Entry<String, JsonNode> e = it.next();
+                String fieldName = e.getKey();
+
+                // Safety: if input already contains _hm_original_id, we will overwrite with our value later.
+                // We still stream it now; last write wins.
+                gen.writeFieldName(fieldName);
+                gen.writeTree(e.getValue());
+            }
+        } else {
+            // Keep prior semantics: wrap non-object canonical under "Body"
+            gen.writeFieldName("Body");
+            gen.writeTree(canonical);
+        }
+
+        String originalId = exchange.getId();
+        if (originalId != null) {
+            gen.writeStringField("_hm_original_id", originalId);
+        }
+
+        gen.writeEndObject();
+        gen.writeRaw('\n');
+    }
+
+    // -----------------------------
+    // Sharding & lifecycle
+    // -----------------------------
     private boolean shouldRotateShard() {
         return currentLines >= maxLinesPerShard
                 || currentUncompressedBytes >= maxUncompressedBytesApprox;
@@ -165,84 +223,63 @@ public class ShardedZstdJsonlMutantWriter implements MutantWriter {
         currentFinalPath = outputDir.resolve(baseName);
         currentTmpPath = outputDir.resolve(baseName + ".tmp");
 
-        // Defensive: if a stale tmp exists (e.g., previous crash), remove it to avoid surprises.
         Files.deleteIfExists(currentTmpPath);
 
         fileOut = Files.newOutputStream(currentTmpPath);
-        zstdOut = new ZstdOutputStream(new BufferedOutputStream(fileOut), zstdLevel);
+        OutputStream buffered = new BufferedOutputStream(fileOut, bufferBytes);
 
-        // Count bytes written BEFORE compression.
-        // (This is the "uncompressed JSONL bytes" going into the compressor.)
+        zstdOut = new ZstdOutputStream(buffered, zstdLevel);
+
+        // Count bytes BEFORE compression: place counter ABOVE zstdOut (so it sees uncompressed JSONL bytes).
+        // Note: we count "bytes emitted by JsonGenerator", which is the uncompressed UTF-8 JSONL stream.
         countOut = new CountingOutputStream(zstdOut);
 
-        // JsonGenerator writes UTF-8 bytes directly to OutputStream (no intermediate String)
-        jsonGen = jsonFactory.createGenerator(countOut);
-        // Keep defaults: no pretty printer.
+        gen = factory.createGenerator(countOut);
+        // We want explicit control over closing underlying streams
+        gen.configure(Feature.AUTO_CLOSE_TARGET, false);
 
         currentLines = 0;
         currentUncompressedBytes = 0;
     }
 
-    /**
-     * Close current shard stream, then atomically rename tmp -> final.
-     * If atomic move is not supported by the filesystem, fall back to a regular move.
-     */
     private void closeCurrentShardAndCommit() throws IOException {
-        if (jsonGen == null) {
+        if (gen == null) {
             return;
         }
 
         IOException closeError = null;
 
-        // Close in the right order:
-        // - jsonGen.close() flushes JSON generator buffers and closes underlying stream by default.
-        //   However, we want explicit control; so close generator, then close streams defensively.
+        // 1) Flush generator buffers
         try {
-            jsonGen.flush();
+            gen.flush();
         } catch (IOException e) {
             closeError = e;
         }
 
+        // 2) Close generator (won't close streams due to AUTO_CLOSE_TARGET=false)
         try {
-            jsonGen.close();
+            gen.close();
         } catch (IOException e) {
             if (closeError == null) closeError = e;
         } finally {
-            jsonGen = null;
+            gen = null;
         }
 
-        // At this point countOut/zstdOut/fileOut may already be closed via jsonGen.close(),
-        // but closing closed streams is typically safe; we do it defensively.
-        try {
-            if (countOut != null) countOut.close();
-        } catch (IOException e) {
-            if (closeError == null) closeError = e;
-        } finally {
-            countOut = null;
-        }
+        // 3) Close streams (in order)
+        closeQuietly(countOut, closeError);
+        countOut = null;
 
-        try {
-            if (zstdOut != null) zstdOut.close();
-        } catch (IOException e) {
-            if (closeError == null) closeError = e;
-        } finally {
-            zstdOut = null;
-        }
+        closeQuietly(zstdOut, closeError);
+        zstdOut = null;
 
-        try {
-            if (fileOut != null) fileOut.close();
-        } catch (IOException e) {
-            if (closeError == null) closeError = e;
-        } finally {
-            fileOut = null;
-        }
+        closeQuietly(fileOut, closeError);
+        fileOut = null;
 
-        // If closing failed, do NOT rename to final; surface the error.
         if (closeError != null) {
             throw closeError;
         }
 
-        // Commit tmp -> final
+        // 4) Commit tmp -> final
         try {
             Files.move(currentTmpPath, currentFinalPath, StandardCopyOption.ATOMIC_MOVE);
         } catch (AtomicMoveNotSupportedException e) {
@@ -250,34 +287,19 @@ public class ShardedZstdJsonlMutantWriter implements MutantWriter {
         }
     }
 
-    @Override
-    public void flush() throws IOException {
-        if (closed) {
-            return;
-        }
-        if (jsonGen != null) {
-            jsonGen.flush();
-        }
-        if (zstdOut != null) {
-            zstdOut.flush();
+    private static void closeQuietly(OutputStream os, IOException prior) throws IOException {
+        if (os == null) return;
+        try {
+            os.close();
+        } catch (IOException e) {
+            // prefer the first error, but if there wasn't one, propagate this
+            if (prior == null) throw e;
         }
     }
 
-    @Override
-    public void close() throws IOException {
-        if (closed) {
-            return;
-        }
-        closed = true;
-
-        // Close & commit the last shard as well
-        closeCurrentShardAndCommit();
-    }
-
-    /**
-     * Simple OutputStream wrapper to count bytes written into it.
-     * This counts bytes BEFORE compression because it sits "above" zstdOut.
-     */
+    // -----------------------------
+    // CountingOutputStream
+    // -----------------------------
     private static final class CountingOutputStream extends OutputStream {
         private final OutputStream delegate;
         private long count = 0;
