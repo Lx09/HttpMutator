@@ -11,7 +11,7 @@ import es.us.isa.httpmutator.core.util.OperatorNames;
  * Operator that changes the status code class of an HTTP response by changing it to a different group: 20X group, 40X group, and 500 group.
  */
 public class StatusCodeReplacementWith20XOperator extends AbstractOperator {
-    private final int[] SC20X = {200, 201, 204};
+    private final int[] SC20X = {200, 201, 202, 204};
 
     public StatusCodeReplacementWith20XOperator() {
         super();

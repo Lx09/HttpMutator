@@ -147,4 +147,5 @@ See the docs for deeper dives:
 - [`docs/restassured-integration.md`](docs/restassured-integration.md)
 - [`docs/extending-httpmutator.md`](docs/extending-httpmutator.md)
 - [`docs/output-and-reporting.md`](docs/output-and-reporting.md)
+- [`docs/mutation-operators.md`](docs/mutation-operators.md)
 
