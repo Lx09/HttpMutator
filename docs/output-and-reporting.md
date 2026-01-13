@@ -1,62 +1,210 @@
 # Output and Reporting
 
-HttpMutator produces complete mutated HTTP responses and lightweight counters you can export to CSV. All outputs are grounded in the `StandardHttpResponse` shape.
+- [Output and Reporting](#output-and-reporting)
+  - [Response model](#response-model)
+  - [Optional `_hm_*` metadata (traceability)](#optional-_hm_-metadata-traceability)
+  - [Outputs](#outputs)
+    - [JSONL](#jsonl)
+    - [HAR](#har)
+    - [Zstd-sharded JSONL](#zstd-sharded-jsonl)
+  - [Minimal example using `mutate(...)`](#minimal-example-using-mutate)
+  - [Reporting](#reporting)
+    - [CsvReporter](#csvreporter)
+  - [Common pitfalls](#common-pitfalls)
 
-## Response Shape
-- Every mutated payload is a JSON object with `"Status Code"`, `"Headers"`, and `"Body"`.
-- `Mutant.getOriginalJsonPath()` tells you which path was mutated (e.g., `Body/items/0/name`, `Headers/content-type/charset`, `Status Code`).
-- `Mutant.getMutatorClassName()` and `Mutant.getOperatorClassName()` identify the mutator/operator used.
 
-Example mutant payload:
+HttpMutator separates mutation generation from mutation consumption. It produces outputs so users can handle large datasets, run offline analysis, and integrate with external pipelines. Reporting summarizes what was generated and provides traceability without requiring internal knowledge.
+
+## Response model
+
+HttpMutator operates on an original response and produces mutated responses where exactly one part changes. It uses `StandardHttpResponse` as a normalized model that is independent of input source (HAR, JSONL, or in-memory objects).
+
+The serialized shape is a single JSON object with three top-level fields:
+
 ```json
 {
-  "Status Code": 404,
+  "Status Code": 200,
   "Headers": {"content-type": "application/json"},
   "Body": {"id": 1, "name": "book"}
 }
 ```
 
-## Streaming JSONL Pipelines
-`HttpMutator.mutateJsonlToJsonl(...)` reads JSONL responses and writes selected mutants as JSONL without buffering everything in memory.
+Assumptions:
+- `Headers` is a JSON object.
+- `Body` is a JSON value (object, array, string, number, or null).
+- This is a normalized data record, not a live HTTP object.
+
+## Optional `_hm_*` metadata (traceability)
+
+Metadata is optional and writer-dependent. It exists for traceability and is not required for mutation correctness.
+
+Fields that may appear:
+- `_hm_original_id`: identifier of the original response.
+- `_hm_original_json_path`: location that was mutated.
+- `_hm_mutator`: mutator class name.
+- `_hm_operator`: operator class name.
+
+Behavior by output type:
+- JSONL output can include these fields when metadata is enabled.
+- HAR output includes these fields for each entry.
+- Zstd-sharded JSONL includes only `_hm_original_id`.
+
+Zstd-sharded JSONL keeps only `_hm_original_id` because it is the join key back to the original corpus while keeping each record small.
+
+## Outputs
+
+HttpMutator supports multiple output formats: JSONL, HAR, and Zstd-sharded JSONL. Outputs are produced by writer components; the public extension point is `MutantWriter`.
+
+The output layer is extensible by implementing `MutantWriter` and registering it via `HttpMutator.addWriter(...)` or `HttpMutator.withWriters(...)`.
+
+The following table summarizes output choices:
+
+| Goal | Recommended format | Why |
+| --- | --- | --- |
+| Manual inspection of a small sample | HAR | Many tools can open it directly. |
+| Large-scale offline analysis / pipeline processing | JSONL | Easy to stream and process line-by-line. |
+| Archival of very large corpora with minimal storage/I-O | Zstd-sharded JSONL | Compressed, sharded, and built for scale. |
+
+### JSONL
+
+JSONL is designed for scalable, line-delimited pipelines and offline analysis.
+
+How it works: each mutated response is written as one JSON object per line, which makes the output streamable and easy to batch-process.
+
+When to use it:
+- Large corpora that require streaming or batch processing.
+- Workflows that need simple line-based ingestion.
+
+Trade-offs:
+- Metadata increases size if enabled.
+
+Extending: provide a custom `MutantWriter` when a different line-oriented format is required.
+
+### HAR
+
+HAR is designed for compatibility with existing HAR-based tooling.
+
+How it works: mutated responses are emitted as HAR entries so downstream tools can consume the results without conversion.
+
+When to use it:
+- Workflows that already rely on HAR viewers or parsers.
+- Compatibility with existing tooling is more important than scale.
+
+Trade-offs:
+- Higher memory usage and less suitable for very large datasets.
+
+Extending: implement a writer that adapts outputs to a different tool-specific format.
+
+### Zstd-sharded JSONL
+
+Zstd-sharded JSONL is optimized for very large mutation corpora where storage and I-O become bottlenecks.
+
+How it works: it combines Zstd compression with sharding so output remains compact and files stay manageable at scale.
+
+When to use it:
+- Archival of very large corpora.
+- Batch processing where inspection is secondary to throughput and storage efficiency.
+
+Trade-offs:
+- Direct inspection (grep, quick opens) is less convenient.
+- Metadata is intentionally minimal.
+
+Extending: implement a writer that applies a different compression or sharding policy.
+
+## Minimal example using `mutate(...)`
+
+`mutate(...)` takes a normalized response and returns a list of mutated responses selected by the configured strategy.
 
 ```java
+import com.fasterxml.jackson.databind.ObjectMapper;
 import es.us.isa.httpmutator.core.HttpMutator;
+import es.us.isa.httpmutator.core.model.StandardHttpResponse;
 import es.us.isa.httpmutator.core.strategy.RandomSingleStrategy;
 
-HttpMutator mutator = new HttpMutator();
-try (Reader in = Files.newBufferedReader(Path.of("responses.jsonl"));
-     Writer out = Files.newBufferedWriter(Path.of("mutants.jsonl"))) {
-    mutator.mutateJsonlToJsonl(in, out, new RandomSingleStrategy(), true);
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public class BasicExample {
+    public static void main(String[] args) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, Object> headers = new HashMap<>();
+        headers.put("content-type", "application/json");
+
+        StandardHttpResponse response = StandardHttpResponse.of(
+                200,
+                headers,
+                mapper.readTree("{\"id\":1,\"name\":\"book\"}")
+        );
+
+        HttpMutator mutator = new HttpMutator(1234L)
+                .withMutationStrategy(new RandomSingleStrategy());
+
+        List<StandardHttpResponse> mutants = mutator.mutate(response);
+        for (StandardHttpResponse mutated : mutants) {
+            System.out.println(mutated.toJsonString());
+        }
+    }
 }
 ```
 
-- Each input line must contain the three canonical fields.
-- `includeMeta=true` adds helper fields to each output line:
-  - `_hm_original_id` – copied from `id` in the original line if present.
-  - `_hm_original_json_path` – path mutated.
-  - `_hm_mutator` / `_hm_operator` – class names of the mutator and operator.
-- If the mutated node is not an object, it is wrapped under `{"mutated": ...}` to keep JSONL well-formed.
+## Reporting
 
-## Mutation Statistics
-Use `MutationStatistics` to count operator usage across tests or per test ID.
+Reporting provides summaries of mutation activity during generation and supports export without parsing full outputs. Reporting is independent of output formats.
+
+Reporters implement `MutantReporter` and are registered via `HttpMutator.addReporter(...)` or `HttpMutator.withReporters(...)`.
+
+### CsvReporter
+
+`CsvReporter` provides a CSV summary of mutation activity.
+
+Output: a CSV written to the path provided by the caller.
+
+Use cases:
+- Compact summaries for quick review.
+- Export for downstream analysis tools that accept CSV.
+
+The following example enables `CsvReporter` and generates mutants via `mutate(...)`.
 
 ```java
-import es.us.isa.httpmutator.core.stats.MutationStatistics;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import es.us.isa.httpmutator.core.HttpMutator;
+import es.us.isa.httpmutator.core.model.StandardHttpResponse;
+import es.us.isa.httpmutator.core.reporter.CsvReporter;
+import es.us.isa.httpmutator.core.strategy.RandomSingleStrategy;
 
-MutationStatistics stats = MutationStatistics.getInstance();
+import java.nio.file.Paths;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
-mutator.mutate(response, group -> stats.recordBatch("test-login", group.getMutants()));
+public class ReportingExample {
+    public static void main(String[] args) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        Map<String, Object> headers = new HashMap<>();
+        headers.put("content-type", "application/json");
 
-stats.exportGlobalCsv(Path.of("target/mutation-global.csv"));
-stats.exportDetailedCsv(Path.of("target/mutation-detailed.csv"));
-stats.clear(); // reset between suites
+        StandardHttpResponse response = StandardHttpResponse.of(
+                200,
+                headers,
+                mapper.readTree("{\"id\":1,\"name\":\"book\"}")
+        );
+
+        try (HttpMutator mutator = new HttpMutator(1234L)
+                .withMutationStrategy(new RandomSingleStrategy())
+                .addReporter(new CsvReporter(Paths.get("report.csv")))) {
+            List<StandardHttpResponse> mutants = mutator.mutate(response);
+            for (StandardHttpResponse mutated : mutants) {
+                System.out.println(mutated.toJsonString());
+            }
+        }
+    }
+}
 ```
 
-Exports:
-- **Global CSV** (`mutatorName,operatorName,count`) via `exportGlobalCsv`.
-- **Detailed CSV** (`testId,mutatorName,operatorName,count`) via `exportDetailedCsv`.
+## Common pitfalls
 
-## Using MutantGroup Streams
-- `HttpMutator.mutate(...)` delivers a `MutantGroup` per path/header/status. Apply your strategy and stop storing unused mutants to avoid memory pressure.
-- Combine `MutantGroup.getIdentifier()` with `Mutant.getOriginalJsonPath()` to map killed mutants back to the original response or test step.
-- `AllOperatorsStrategy` replays every mutant; `RandomSingleStrategy` picks one per group. Custom strategies can thin out large corpora before writing JSONL or executing assertions.
+- If field names do not match, the JSONL reader rejects the line. Ensure producers use `"Status Code"`, `"Headers"`, and `"Body"`.
+- Top-level boolean bodies are not supported; `Body` must be object, array, string, number, or null.
+- Header names are treated case-insensitively in mutation logic.
+- Metadata may overwrite existing keys; if the input already contains `_hm_*`, writers overwrite them.

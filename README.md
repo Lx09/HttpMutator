@@ -86,7 +86,7 @@ public class BasicExample {
 }
 ```
 
-## How it works (high level)
+## How it works 
 
 1. Normalize each response into a consistent internal format (status code, headers, response body (JSON)).
 
@@ -106,7 +106,7 @@ public class BasicExample {
 Key entry points:
 - `HttpMutator`: main facade for in-memory and streaming mutation.
 - `HttpMutatorEngine`: core mutation logic (used internally, but stable).
-- `MutationStrategy` (e.g., `RandomSingleStrategy`, `AllOperatorsStrategy`).
+- `MutationStrategy` (e.g., `RandomSingleStrategy`, `AllOperatorsStrategy`) for sampling mutations grouped by location.
 - `JsonlExchangeReader` / `HarExchangeReader` for streaming input.
 - `JsonlMutantWriter` / `HarMutantWriter` for outputs.
 - `HttpMutatorRestAssuredFilter` for REST Assured integration.
@@ -147,9 +147,9 @@ To make each mutated response traceable, writers can attach a few extra fields
 they are bookkeeping information added by HttpMutator:
 
 - `_hm_original_id`: identifier of the original response (so you can group mutants back to their source).
-- `_hm_original_json_path`: location in the response body that was mutated (only present for body mutations).
+- `_hm_original_json_path`: location in the response that was mutated.
 - `_hm_mutator`: the component that performed the mutation (e.g., status-code / header / body mutator).
-- `_hm_operator`: the specific mutation operator applied (e.g., “replace status code”, “remove array element”, etc.).
+- `_hm_operator`: the specific mutation operator applied (e.g., “ArrayDisorderElementsOperator”, “ArrayAddElementOperator”, etc.).
 
 For format details, see `docs/output-and-reporting.md`.
 
