@@ -3,72 +3,30 @@
   HttpMutator
 </h1>
 
-HttpMutator mutates HTTP responses (status code, headers, JSON body) to fuzz REST clients and measure mutation scores. It walks normalized responses, applies weighted operators, and streams `MutantGroup` batches so tests can decide which mutants to execute.
+HttpMutator is a black-box mutation testing tool for web APIs that generates faulty yet realistic variants of HTTP responses to assess the fault-detection capability of API testing tools and test oracles.
 
+Unlike traditional mutation testing that injects faults into source code, HttpMutator mutates observable response elements — status codes, headers, and JSON payloads — to simulate the effects of functional bugs in the underlying implementation. The resulting mutated responses can be replayed against existing test suites or API testing tools, making the approach applicable to both closed- and open-source APIs.
 
-## Execution Pipeline
+Use cases:
+- **Assessing API testing tools in black-box settings** by replaying mutated HTTP responses to measure how effectively tools detect incorrect outputs beyond crashes and specification violations.
 
-```mermaid
-flowchart TD
-  subgraph Input
-    A[JSONL]
-    B[HAR]
-    D[Response in Java]
-  end
+- **Evaluating and comparing test oracles** (e.g., regression oracles, specification-based checks, invariant-based assertions) using the same set of mutated responses and computing mutation scores.
 
-  subgraph Standardization
-    C[StandardHttpResponse]
-    A -->|JSONL reader| C
-    B -->|HAR reader| C
-    D -->|BidirectionalConverter| C
-  end
+- **Integrating response mutation into existing workflows** that already record and exchange HTTP traffic (e.g., HAR artifacts), enabling offline evaluation pipelines without access to API source code.
 
-  subgraph HttpMutator
-    G[HttpMutatorEngine]
-    H[StatusCodeMutator]
-    I[HeaderMutator]
-    J[BodyMutator]
+## Install
 
-    C --> G
-    G -->|Call| H
-    G -->|Call| I
-    G -->|Call| J
-  end
+### Build from source
+Java Development Kit (JDK) 8 or later and Apache Maven are required.  
 
-  subgraph Mutation Strategy
-    M[AllOperatorStrategy]
-
-    H -->|MutantGroup| M
-    I -->|MutantGroup| M
-    J -->|MutantGroup| M
-  end
-
-  subgraph Mutants
-    S[Streaming Mutants]
-    M -->|select mutants| S
-  end
-
-  subgraph Output
-    Q[JSONL]
-    R[HAR]
-    P[Response in Java]
-
-    S -->|JSONL writer| Q
-    S -->|HAR writer| R
-    S -->|BidirectionalConverter| P
-  end
+```bash
+mvn clean install -DskipTests
 ```
 
-## Features
-- **Streaming mutation engine** – `HttpMutator` emits mutants per JSON path/header/status without storing everything in memory.
-- **Converters included** – `StandardHttpResponse` is the canonical model with adapters for REST Assured (`RestAssuredBidirectionalConverter`) and WebScarab/plain HTTP text.
-- **Selection strategies** – Use `RandomSingleStrategy`, `AllOperatorsStrategy`, or custom `MutationStrategy` implementations to pick mutants.
-- **Statistics ready** – `MutationStatistics` counts operator usage and exports CSV summaries.
-- **JSONL pipeline** – `mutateJsonlToJsonl(...)` streams huge response corpora with optional mutation metadata.
+This builds all modules and installs `1.0-SNAPSHOT` artifacts to your local Maven repository.
 
-## Installation
-
-Maven (core library):
+### Use from another Maven project (local SNAPSHOT)
+Core library:
 ```xml
 <dependency>
   <groupId>es.us.isa.httpmutator</groupId>
@@ -77,14 +35,14 @@ Maven (core library):
 </dependency>
 ```
 
-Maven (REST Assured integration):
+REST Assured integration:
 ```xml
 <dependency>
   <groupId>es.us.isa.httpmutator</groupId>
   <artifactId>httpmutator-integrations</artifactId>
   <version>1.0-SNAPSHOT</version>
 </dependency>
-<!-- RestAssured is marked provided; add it if your project does not already depend on it -->
+<!-- rest-assured is marked provided in the module -->
 <dependency>
   <groupId>io.rest-assured</groupId>
   <artifactId>rest-assured</artifactId>
@@ -92,60 +50,117 @@ Maven (REST Assured integration):
 </dependency>
 ```
 
-Or build from source:
-```bash
-mvn clean package
-```
+## Quickstart
 
-## Quick Start
-
+Minimal in-memory mutation:
 ```java
 import com.fasterxml.jackson.databind.ObjectMapper;
 import es.us.isa.httpmutator.core.HttpMutator;
 import es.us.isa.httpmutator.core.model.StandardHttpResponse;
-import es.us.isa.httpmutator.core.strategy.MutationStrategy;
 import es.us.isa.httpmutator.core.strategy.RandomSingleStrategy;
-import es.us.isa.httpmutator.core.util.RandomUtils;
 
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class BasicExample {
     public static void main(String[] args) throws Exception {
         ObjectMapper mapper = new ObjectMapper();
+        Map<String, Object> headers = new HashMap<>();
+        headers.put("content-type", "application/json");
+
         StandardHttpResponse response = StandardHttpResponse.of(
                 200,
-                Map.of("content-type", "application/json"),
+                headers,
                 mapper.readTree("{\"id\":1,\"name\":\"book\"}")
         );
 
-        HttpMutator mutator = new HttpMutator(1234L); // seeds RandomUtils
-        MutationStrategy selector = new RandomSingleStrategy();
+        HttpMutator mutator = new HttpMutator(1234L)
+                .withMutationStrategy(new RandomSingleStrategy());
 
-        mutator.mutate(response, group ->
-                selector.selectMutants(group).forEach(mutant ->
-                        System.out.printf("%s via %s -> %s%n",
-                                mutant.getOriginalJsonPath(),
-                                mutant.getOperatorClassName(),
-                                mutant.getMutatedNodeAsString())
-                )
-        );
-
-        // Reset randomness if you want non-deterministic runs later
-        RandomUtils.clearSeed();
+        List<StandardHttpResponse> mutants = mutator.mutate(response);
+        for (StandardHttpResponse mutated : mutants) {
+            System.out.println(mutated.toJsonString());
+        }
     }
 }
 ```
 
-## Core Concepts
-- `StandardHttpResponse` – canonical response (`"Status Code"`, `"Headers"`, `"Body"`).
-- `Mutant` / `MutantGroup` – one mutated response and the batch of mutants for a given path.
-- `MutationStrategy` – chooses which mutants to execute (`RandomSingleStrategy`, `AllOperatorsStrategy`, or custom).
-- `BidirectionalConverter` – adapters to/from external response types.
-- `json-mutation.properties` – operator toggles, weights, and ranges.
+## How it works (high level)
 
-See the docs for deeper dives:
-- [`docs/restassured-integration.md`](docs/restassured-integration.md)
-- [`docs/extending-httpmutator.md`](docs/extending-httpmutator.md)
-- [`docs/output-and-reporting.md`](docs/output-and-reporting.md)
-- [`docs/mutation-operators.md`](docs/mutation-operators.md)
+1. Normalize each response into a consistent internal format (status code, headers, response body (JSON)).
 
+2. Propose mutations for the status code, headers, and JSON payload (each mutation changes one observable part).
+
+3. Organize mutations by location (e.g., “this header” or “this JSON field”) so they can be sampled independently.
+
+4. Select mutations using a strategy (random sampling or exhaustive, depending on cost).
+
+5. Materialize mutated responses by applying the selected mutations to the original response.
+
+6. Export mutants to files (e.g., JSONL/HAR) or pass them directly to in-memory consumers.
+
+7. Optionally collect summaries (counts, mutation operator usage) via reporters.
+
+## API surface
+Key entry points:
+- `HttpMutator`: main facade for in-memory and streaming mutation.
+- `HttpMutatorEngine`: core mutation logic (used internally, but stable).
+- `MutationStrategy` (e.g., `RandomSingleStrategy`, `AllOperatorsStrategy`).
+- `JsonlExchangeReader` / `HarExchangeReader` for streaming input.
+- `JsonlMutantWriter` / `HarMutantWriter` for outputs.
+- `HttpMutatorRestAssuredFilter` for REST Assured integration.
+
+## Configuration
+HttpMutator is configurable: you can enable/disable mutation categories and tune value ranges used by certain operators.
+Defaults are loaded from `httpmutator-core/src/main/resources/json-mutation.properties` via `PropertyManager`.
+
+Common adjustments:
+- Enable/disable mutation categories: status code, headers, and JSON body.
+- Tune numeric and string ranges used by value-level operators (e.g., min/max length, min/max numeric values).
+- Enable/disable specific header-related mutations (e.g., media type, charset).
+
+Programmatic override:
+```java
+import es.us.isa.httpmutator.core.util.PropertyManager;
+
+PropertyManager.setProperty("operator.body.enabled", "true");
+PropertyManager.setProperty("operator.value.string.length.max", "256");
+```
+Reset to defaults:
+
+```java
+import es.us.isa.httpmutator.core.util.PropertyManager;
+
+PropertyManager.resetProperties();
+```
+
+## Outputs
+
+Supported outputs:
+- JSONL files containing mutated responses (`JsonlMutantWriter`).
+- HAR files containing mutated responses (`HarMutantWriter`).
+- Optional compressed JSONL shards for large corpora (`ShardedZstdJsonlMutantWriter`).
+
+To make each mutated response traceable, writers can attach a few extra fields
+(prefixed with `_hm_`). These fields are **not part of the original API response**;
+they are bookkeeping information added by HttpMutator:
+
+- `_hm_original_id`: identifier of the original response (so you can group mutants back to their source).
+- `_hm_original_json_path`: location in the response body that was mutated (only present for body mutations).
+- `_hm_mutator`: the component that performed the mutation (e.g., status-code / header / body mutator).
+- `_hm_operator`: the specific mutation operator applied (e.g., “replace status code”, “remove array element”, etc.).
+
+For format details, see `docs/output-and-reporting.md`.
+
+## Documentation (Where to go next)
+Detailed guides live in `docs/`:
+- `docs/mutation-operators.md`
+- `docs/extending-httpmutator.md`
+- `docs/restassured-integration.md`
+- `docs/output-and-reporting.md`
+
+TODO (docs not present in repo):
+- `docs/extending-mutation-operators.md`
+- `docs/input-output-formats.md`
+- `docs/rest-assured-integration.md` (current file is `docs/restassured-integration.md`)
