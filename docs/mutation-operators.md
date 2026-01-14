@@ -252,7 +252,7 @@ public class Example {
 Result: returns null to indicate the Location header should be removed. Example: "https://example.org/items/1" -> null.
 
 ## JSON Mutation Operators
-### Array Element Addition (AEA)
+### AEA - Array Element Addition
 Inserts new elements into an existing array.
 
 #### Applicability / Preconditions
@@ -274,7 +274,7 @@ public class Example {
 ```
 Result: returns the ArrayNode with one or more new elements appended. Example: [1] -> [1, 0].
 
-### Array Element Removal (AER)
+### AER - Array Element Removal
 Removes elements from an array; `isApplicable(...)` requires the array size to exceed `operator.array.removedElements.max`.
 
 #### Applicability / Preconditions
@@ -297,7 +297,7 @@ public class Example {
 ```
 Result: returns the ArrayNode with one or more elements removed. Example: [1,2,3,4,5] -> [1,2,4,5].
 
-### Array Elements Exchange (AEE)
+### AEE - Array Elements Exchange
 Reorders an array by moving one element to a different position.
 
 #### Applicability / Preconditions
@@ -319,7 +319,7 @@ public class Example {
 ```
 Result: returns the ArrayNode with elements reordered. Example: ["a","b"] -> ["b","a"].
 
-### Empty Array Setting (EAS)
+### EAS - Empty Array Setting
 Clears all elements from a non-empty array.
 
 #### Applicability / Preconditions
@@ -341,7 +341,7 @@ public class Example {
 ```
 Result: returns the ArrayNode with all elements removed (empty array). Example: [1] -> [].
 
-### Object Property Addition (OPA)
+### OPA - Object Property Addition
 Adds new properties to a JSON object.
 
 #### Applicability / Preconditions
@@ -363,7 +363,7 @@ public class Example {
 ```
 Result: returns the ObjectNode with one or more new properties added. Example: {"id":1} -> {"id":1,"randomLong1":42}.
 
-### Object Property Removal (OPR)
+### OPR - Object Property Removal
 Removes existing properties from a JSON object.
 
 #### Applicability / Preconditions
@@ -385,7 +385,7 @@ public class Example {
 ```
 Result: returns the ObjectNode with one or more properties removed. Example: {"id":1,"name":"x"} -> {"id":1}.
 
-### Object-Type Property Removal (OTPR)
+### OTPR - Object-Type Property Removal
 Removes object-valued properties from a JSON object; current code only keeps the last discovered object-type property as a removal candidate.
 
 #### Applicability / Preconditions
@@ -407,7 +407,7 @@ public class Example {
 ```
 Result: returns the ObjectNode with an object-valued property removed. Example: {"a":1,"details":{"x":2}} -> {"a":1}.
 
-### Property Type Change (PTC)
+### PTC - Property Type Change
 Changes the type of a JSON node to a different type; for root-level object/array bodies, `BodyMutator.resetFirstLevelOperators()` removes this operator so it applies to nested nodes.
 
 #### Applicability / Preconditions
@@ -425,7 +425,7 @@ public class Example {
 ```
 Result: returns a value of a different JSON type than the input. Example: "abc" -> 42.
 
-### Boolean Property Reverse (BPR)
+### BPR - Boolean Property Reverse
 Flips a boolean value.
 
 #### Applicability / Preconditions
@@ -443,7 +443,7 @@ public class Example {
 ```
 Result: returns the negated boolean value. Example: true -> false.
 
-### Null Property Setting (NPS)
+### NPS - Null Property Setting
 Replaces a value with JSON null; for root-level object/array bodies, `BodyMutator.resetFirstLevelOperators()` removes this operator so it applies to nested nodes.
 
 #### Applicability / Preconditions
@@ -461,7 +461,7 @@ public class Example {
 ```
 Result: returns null. Example: "abc" -> null.
 
-### Numeric Property Replacement (NPR)
+### NPR - Numeric Property Replacement
 Replaces a numeric value with another numeric value in the configured range.
 
 #### Applicability / Preconditions
@@ -482,7 +482,7 @@ public class Example {
 ```
 Result: returns a numeric value within the configured range. Example: 10 -> 42.
 
-### String Property Replacement (SPR)
+### SPR - String Property Replacement
 Replaces a string value with a randomly generated string.
 
 #### Applicability / Preconditions
@@ -500,7 +500,7 @@ public class Example {
 ```
 Result: returns a new randomly generated string. Example: "abc" -> "Q9x@L".
 
-### Special Characters Addition (SCA)
+### SCA - Special Characters Addition
 Inserts special characters into a string value.
 
 #### Applicability / Preconditions
@@ -518,7 +518,7 @@ public class Example {
 ```
 Result: returns the string with special characters inserted. Example: "abc" -> "a/bc".
 
-### String Length Reduction/Extension (SRE)
+### SRE - String Length Reduction/Extension
 Replaces a string value with boundary cases (empty, min/max length, lowercase/uppercase).
 
 #### Applicability / Preconditions
