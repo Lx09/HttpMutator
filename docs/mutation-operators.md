@@ -74,6 +74,8 @@
       - [Applicability / Preconditions](#applicability--preconditions-22)
       - [Example (code)](#example-code-22)
 - [Extending Mutation Operators](#extending-mutation-operators)
+  - [Step 1. Implement an operator](#step-1-implement-an-operator)
+  - [Step 2. Register the operator in a mutator](#step-2-register-the-operator-in-a-mutator)
 
 
 This document explains how each mutation operator is applied, what it can act on, and what the resulting mutant looks like.
@@ -535,3 +537,53 @@ public class Example {
 Result: returns a boundary-case string (empty, min/max length, lowercase, or uppercase). Example: "abc" -> "".
 
 # Extending Mutation Operators
+HttpMutator is extensible by design and mutation behavior is extended by adding new mutation operators.
+Operators are applied by mutators during traversal of responses and produce concrete mutant values.
+This section describes the supported extension path for operators.
+
+## Step 1. Implement an operator
+
+A mutation operator represents one concrete change to a value.
+Operators extend `AbstractOperator` and define two required behaviors in this codebase:
+- `protected Object doMutate(Object element)` implements the actual mutation and returns the mutated value.
+- `public boolean isApplicable(Object element)` restricts where the operator can be applied so that incompatible inputs are skipped.
+
+The `ExampleOperator` below illustrates this contract for string values.
+`isApplicable(...)` returns true only when the input is a `String`, so the operator is applied only to string-typed locations discovered by the mutator.
+`doMutate(...)` implements the mutation by appending the suffix `"_mut"` to the original value.
+A string value such as `"book"` is therefore mutated into `"book_mut"`, while non-string values are ignored by this operator.
+
+```java
+import es.us.isa.httpmutator.core.AbstractOperator;
+
+public class ExampleOperator extends AbstractOperator {
+    @Override
+    protected Object doMutate(Object value) {
+        return String.valueOf(value) + "_mut";
+    }
+
+    @Override
+    public boolean isApplicable(Object value) {
+        return value instanceof String;
+    }
+}
+```
+
+## Step 2. Register the operator in a mutator
+
+Mutators select mutation targets and apply mutation operators using an operator map.
+An operator becomes available to a mutator after it is inserted into that map via `getOperators().put(...)`.
+Registration is typically performed by extending an existing mutator such as StringMutator.
+
+Minimal mutator integration example:
+```java
+import es.us.isa.httpmutator.core.body.value.string0.StringMutator;
+import es.us.isa.httpmutator.core.util.OperatorNames;
+
+public class CustomStringMutator extends StringMutator {
+    public CustomStringMutator() {
+        super();
+        getOperators().put(OperatorNames.REPLACE, new ExampleOperator());
+    }
+}
+```
