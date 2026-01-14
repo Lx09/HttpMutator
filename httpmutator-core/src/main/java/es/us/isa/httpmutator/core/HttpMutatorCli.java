@@ -91,7 +91,7 @@ public final class HttpMutatorCli {
         List<MutantWriter> writers = createWriters(config);
         List<MutantReporter> reporters = createReporters(config);
 
-        MutationStrategy strategy = new AllOperatorsStrategy(); // 或者之后再暴露为 CLI 参数
+        MutationStrategy strategy = new AllOperatorsStrategy(); // or expose as a CLI parameter later
 
         HttpMutator mutator = new HttpMutator(config.randomSeed)
                 .withMutationStrategy(strategy)
@@ -154,7 +154,7 @@ public final class HttpMutatorCli {
         List<MutantReporter> reporters = new ArrayList<>();
 
         if (config.reporterNames == null || config.reporterNames.isEmpty()) {
-            return reporters; // 默认无 reporter
+            return reporters; // no reporters by default
         }
 
         for (String name : config.reporterNames) {

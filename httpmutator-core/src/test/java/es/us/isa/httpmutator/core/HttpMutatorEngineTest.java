@@ -110,7 +110,7 @@ public class HttpMutatorEngineTest {
 
     @Test
     public void testEmptyHeadersHandledGracefully() throws Exception {
-        // 构造：有 Status Code、有 Body，但 Headers 为空对象 {}
+        // Construct: Status Code and Body present, Headers is an empty object {}
         String json = "{\n" +
                 "  \"Status Code\": 200,\n" +
                 "  \"Headers\": {},\n" +
@@ -118,26 +118,26 @@ public class HttpMutatorEngineTest {
                 "}";
         JsonNode root = MAPPER.readTree(json);
 
-        // 列举期望路径（带索引）
+        // List expected paths (with indices)
         Set<String> expectedPaths = listAllNodePaths(root);
 
-        // 断言：没有任何 Headers/* 路径
+        // Assert: no Headers/* paths
         for (String p : expectedPaths) {
             Assert.assertFalse("Should not contain header path when Headers is empty: " + p,
                     p.startsWith("Headers/"));
         }
 
-        // 断言：其它关键路径仍存在
+        // Assert: other key paths still exist
         Assert.assertTrue(expectedPaths.contains("Status Code"));
-        // Body 是对象：collectPathsWithIndices 会包含容器自身与叶子
+        // Body is an object: collectPathsWithIndices includes the container and leaves
         Assert.assertTrue(expectedPaths.contains("Body"));
         Assert.assertTrue(expectedPaths.contains("Body/a"));
 
-        // 强制开启所有变异器
+        // Force-enable all mutators
         HttpMutatorEngine hm = new HttpMutatorEngine();
         forceEnableAllMutators(hm);
 
-        // 收集所有变异
+        // Collect all mutants
         final List<Mutant> allMutants = new ArrayList<>();
         hm.getAllMutants(root, new java.util.function.Consumer<MutantGroup>() {
             @Override
@@ -146,20 +146,20 @@ public class HttpMutatorEngineTest {
             }
         });
 
-        // 产生的路径集合（归一化）
+        // Produced path set (normalized)
         final Set<String> mutatedPaths = new HashSet<>();
         for (Mutant m : allMutants) {
             mutatedPaths.add(trimTrailingSlash(safePath(m.getOriginalJsonPath())));
         }
 
-        // 断言：不应对 Headers/* 产生任何变异
+        // Assert: no mutants should be produced for Headers/*
         for (String mp : mutatedPaths) {
             Assert.assertFalse("No header mutants expected when Headers is empty: " + mp,
                     mp.startsWith("Headers/"));
         }
 
-        // 断言：非 Header 的期望路径应被覆盖（等于或为前缀）
-        // 这里对 expected 进行过滤，去掉 Headers 相关（虽然这里本就没有）
+        // Assert: non-header expected paths should be covered (equal or prefix)
+        // Filter expected to remove Headers-related paths (none in this case)
         Set<String> expectedNonHeader = new HashSet<>();
         for (String p : expectedPaths) {
             if (!p.startsWith("Headers/")) expectedNonHeader.add(p);
@@ -177,7 +177,7 @@ public class HttpMutatorEngineTest {
                 "}";
         JsonNode root = MAPPER.readTree(json);
 
-        // 强制开启所有变异器
+        // Force-enable all mutators
         HttpMutatorEngine hm = new HttpMutatorEngine();
 
         final List<Mutant> allMutants = new ArrayList<>();

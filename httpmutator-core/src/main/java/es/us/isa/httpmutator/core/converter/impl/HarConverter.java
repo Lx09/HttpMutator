@@ -172,7 +172,7 @@ public class HarConverter implements BidirectionalConverter<JsonNode> {
     @Override
     public StandardHttpRequest toStandardRequest(JsonNode originalRequest) throws ConversionException {
         if (originalRequest == null || originalRequest.isNull()) {
-            // For formats without request, caller可以决定传 null
+            // For formats without request, the caller can decide to pass null
             throw new ConversionException("HAR request JsonNode must not be null");
         }
 
