@@ -5,14 +5,12 @@
 
 HttpMutator is a black-box mutation testing tool for web APIs that generates faulty yet realistic variants of HTTP responses to assess the fault-detection capability of API testing tools and test oracles.
 
-Unlike traditional mutation testing that injects faults into source code, HttpMutator **mutates observable HTTP response elements — status codes, headers, and JSON payloads** — to simulate the effects of functional bugs in the underlying implementation. The resulting mutated responses can be replayed against existing test suites or API testing tools, making the approach applicable even **without access to the source code**.
+Unlike traditional mutation testing that injects faults into source code, HttpMutator **mutates observable HTTP response elements — status codes, headers, and JSON payloads** — to simulate the effects of functional bugs in the underlying implementation. The resulting mutated responses can be replayed against existing test suites or API testing tools, making the approach applicable even **without access to the source code**. It comes with **23** built-in HTTP-level mutation operators across status codes, headers, and JSON bodies; see [docs/mutation-operators.md](docs/mutation-operators.md) for more details.
 
-Use cases:
-- **Assessing API testing tools in black-box settings** by replaying mutated HTTP responses to measure how effectively tools detect incorrect outputs beyond crashes and specification violations.
-
-- **Evaluating and comparing test oracles** (e.g., regression oracles, specification-based checks, invariant-based assertions) using the same set of mutated responses and computing mutation scores.
-
-- **Integrating response mutation into existing workflows** that already record and exchange HTTP traffic (e.g., HAR artifacts), enabling offline evaluation pipelines without access to API source code.
+## Highlights
+- **True black-box mutations** on status codes, headers, and JSON bodies to model real API faults without source access.
+- **Realistic, replayable mutants** that let you compare tools and oracles on the same set of response variants.
+- **REST-assured filter integration** to reuse existing REST-assured assertions and run mutation checks with minimal code changes ([docs/restassured-integration.md](docs/restassured-integration.md)).
 
 ## Install
 
@@ -34,9 +32,12 @@ Core library:
   <version>1.0-SNAPSHOT</version>
 </dependency>
 ```
-## Quickstart
 
-Minimal mutation example:
+## Quickstart
+You can embed HttpMutator in Java tests, or run the HttpMutator CLI to generate mutated outputs for offline pipelines.
+
+### Java API (in-process)
+Minimal mutation example (plug mutants into your existing assertions or test logic):
 ```java
 import com.fasterxml.jackson.databind.ObjectMapper;
 import es.us.isa.httpmutator.core.HttpMutator;
@@ -70,26 +71,36 @@ public class BasicExample {
 }
 ```
 
-## Command-line (CLI) usage
-HttpMutator ships with a simple CLI for offline/batch mutation of recorded HTTP traffic (JSONL or HAR). It reads exchanges from a file, mutates the responses, and writes mutants to output files.
-
-Getting started:
+### CLI (offline mutation outputs)
 ```bash
 mvn -pl httpmutator-core -am package
-java -jar httpmutator-core/target/httpmutator.jar --help
-```
-
-Minimal example (default JSONL output):
-```bash
 java -jar httpmutator-core/target/httpmutator.jar \
   -i httpmutator-core/src/test/resources/httpmutatorInput.jsonl \
-  -o hm-output \
-  -s random
+  -o hm-output
 ```
 
-Common flags: `-i/--input`, `-f/--format`, `-o/--output`, `-s/--strategy`, `--writeHar`, `--writeJsonl`, `--reporter csv`.
-
 For the full list of CLI options, see [docs/cli.md](docs/cli.md).
+
+## REST-assured integration
+REST-assured is widely used for API testing in Java. HttpMutator provides a REST-assured filter that captures responses, reuses your assertions as mutation oracles, and produces per-request mutation outcomes.
+
+Minimal usage:
+```java
+import es.us.isa.httpmutator.integrations.restassured.HttpMutatorRestAssuredFilter;
+import io.restassured.RestAssured;
+import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.equalTo;
+
+HttpMutatorRestAssuredFilter filter = new HttpMutatorRestAssuredFilter();
+RestAssured.filters(filter);
+
+given().when().get("/items/2").then().statusCode(200);
+filter.addAssertionsForLastRequest(resp -> resp.statusCode(200).body("id", equalTo(2)));
+
+filter.runAllMutations();
+```
+
+For setup details and report outputs, see [docs/restassured-integration.md](docs/restassured-integration.md).
 
 ## Configuration
 HttpMutator is configurable: you can enable/disable mutation categories and tune value ranges used by certain operators.
@@ -114,3 +125,8 @@ import es.us.isa.httpmutator.core.util.PropertyManager;
 
 PropertyManager.resetProperties();
 ```
+
+## Extending HttpMutator
+HttpMutator is designed for extension: add new operators, customize mutation strategies, and plug in reporters or writers for your own outputs. The core API exposes extension points in `AbstractOperator`, `AbstractMutator`, `MutationStrategy`, `MutantWriter`, and `MutantReporter`.
+
+See [docs/extending-httpmutator.md](docs/extending-httpmutator.md) for extension patterns and minimal examples.
