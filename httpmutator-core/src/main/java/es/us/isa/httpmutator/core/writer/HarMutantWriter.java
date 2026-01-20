@@ -13,7 +13,9 @@ import es.us.isa.httpmutator.core.model.StandardHttpRequest;
 import es.us.isa.httpmutator.core.model.StandardHttpResponse;
 
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.io.Writer;
+import java.net.URLEncoder;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -22,8 +24,10 @@ import java.time.format.DateTimeFormatter;
  * HAR writer with viewer-friendly compatibility:
  * - entry.startedDateTime fixed to millisecond precision
  * - entry.time present
- * - request is never null (minimal placeholder if missing)
- * - response includes common fields and bodySize is aligned with content.size when possible
+ * - request is never null
+ * - if request.url exists -> keep it unchanged and DO NOT inject mutation info
+ * - if request/url missing -> synthesize a unique URL per entry and encode operator/mutator in query
+ * - response includes common fields and bodySize aligns with content.size when possible
  * - log.pages present (empty)
  */
 public class HarMutantWriter implements MutantWriter {
@@ -33,20 +37,16 @@ public class HarMutantWriter implements MutantWriter {
                     .withZone(ZoneOffset.UTC);
 
     private static final String DEFAULT_HTTP_VERSION = "HTTP/1.1";
-    private static final String UNKNOWN_URL = "http://localhost/unknown";
-    private static final String UNKNOWN_METHOD = "GET";
+
+    /** Base URL used when we have no real request URL. */
+    private static final String SYN_BASE = "http://httpmutator.local/exchange/";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final HarConverter converter = new HarConverter();
     private final Writer out;
 
-    /** Root HAR object: { "log": { ... } } */
     private final ObjectNode root;
-
-    /** HAR log object: contains metadata + pages[] + entries[] */
     private final ObjectNode log;
-
-    /** HAR log.entries array (mutated interactions appended here) */
     private final ArrayNode entries;
 
     private boolean flushed = false;
@@ -89,28 +89,20 @@ public class HarMutantWriter implements MutantWriter {
 
         ObjectNode entry = objectMapper.createObjectNode();
 
-        // ---- Viewer-friendly timestamps: millisecond precision ----
         entry.put("startedDateTime", ISO_MILLIS_UTC.format(Instant.now()));
         entry.put("time", 0);
 
-        // ---- Request (never null) ----
-        entry.set("request", toCompatibleRequest(exchange));
+        entry.set("request", toCompatibleRequest(exchange, mutant));
+        entry.set("response", toCompatibleResponse(mutatedResponse));
 
-        // ---- Response (patched) ----
-        ObjectNode resp = toCompatibleResponse(mutatedResponse);
-        entry.set("response", resp);
-
-        // ---- Timings ----
         ObjectNode timings = objectMapper.createObjectNode();
         timings.put("send", 0);
         timings.put("wait", 0);
         timings.put("receive", 0);
         entry.set("timings", timings);
 
-        // cache block is commonly present
         entry.set("cache", objectMapper.createObjectNode());
 
-        // ---- Traceability metadata ----
         entry.put("_hm_original_id", exchange.getId());
         entry.put("_hm_mutator", mutant.getMutatorClassName());
         entry.put("_hm_operator", mutant.getOperatorClassName());
@@ -119,27 +111,32 @@ public class HarMutantWriter implements MutantWriter {
         entries.add(entry);
     }
 
-    private ObjectNode toCompatibleRequest(HttpExchange exchange) throws IOException {
+    /**
+     * Build a viewer-compatible request object.
+     *
+     * Rules:
+     * 1) If we have a real request and converter provides url -> keep it unchanged, no mutation info injected.
+     * 2) Otherwise -> synthesize url with exchange id and encode mutator/operator as query params.
+     */
+    private ObjectNode toCompatibleRequest(HttpExchange exchange, Mutant mutant) throws IOException {
         StandardHttpRequest req = exchange.getRequest();
 
-        ObjectNode harReq;
+        ObjectNode harReq = objectMapper.createObjectNode();
         if (req != null) {
             try {
                 JsonNode n = converter.fromStandardRequest(req);
-                harReq = (n instanceof ObjectNode) ? (ObjectNode) n : objectMapper.createObjectNode();
+                if (n instanceof ObjectNode) {
+                    harReq = (ObjectNode) n;
+                }
             } catch (ConversionException e) {
-                throw new IOException("Failed to convert request", e);
+                // fall back to synthetic request
+                harReq = objectMapper.createObjectNode();
             }
-        } else {
-            harReq = objectMapper.createObjectNode();
         }
 
+        // Patch minimal common fields (DO NOT override if present)
         if (!harReq.hasNonNull("method")) {
-            harReq.put("method", UNKNOWN_METHOD);
-        }
-        if (!harReq.hasNonNull("url")) {
-            // If you can derive real URL from exchange/request, set it here.
-            harReq.put("url", UNKNOWN_URL);
+            harReq.put("method", "GET");
         }
         if (!harReq.hasNonNull("httpVersion")) {
             harReq.put("httpVersion", DEFAULT_HTTP_VERSION);
@@ -160,7 +157,44 @@ public class HarMutantWriter implements MutantWriter {
             harReq.put("bodySize", -1);
         }
 
+        // If converter already gave us a URL, we keep it as-is.
+        if (harReq.hasNonNull("url")) {
+            return harReq;
+        }
+
+        // Otherwise synthesize a distinguishable URL including mutation info in query.
+        harReq.put("url", synthUrl(exchange, mutant));
         return harReq;
+    }
+
+    private String synthUrl(HttpExchange exchange, Mutant mutant) {
+        String id = exchange.getId();
+        if (id == null || id.trim().isEmpty()) {
+            id = "unknown-id";
+        }
+
+        String mutator = safe(mutant.getMutatorClassName(), "mutator");
+        String operator = safe(mutant.getOperatorClassName(), "operator");
+        String jsonPath = safe(mutant.getOriginalJsonPath(), "/");
+
+        return SYN_BASE + urlEnc(id) +
+                "?mutator=" + urlEnc(mutator) +
+                "&operator=" + urlEnc(operator) +
+                "&jsonpath=" + urlEnc(jsonPath);
+    }
+
+    private static String safe(String s, String fallback) {
+        return (s == null || s.trim().isEmpty()) ? fallback : s;
+    }
+
+    // Java 8 compatible URLEncoder usage
+    private static String urlEnc(String s) {
+        try {
+            return URLEncoder.encode(s, "UTF-8");
+        } catch (UnsupportedEncodingException e) {
+            // UTF-8 is always present; wrap to satisfy compiler
+            throw new RuntimeException(e);
+        }
     }
 
     private ObjectNode toCompatibleResponse(StandardHttpResponse mutatedResponse) throws IOException {
@@ -176,7 +210,6 @@ public class HarMutantWriter implements MutantWriter {
         if (!harResp.hasNonNull("status")) {
             harResp.put("status", status);
         }
-
         if (!harResp.hasNonNull("statusText")) {
             harResp.put("statusText", defaultStatusText(status));
         }
@@ -200,15 +233,12 @@ public class HarMutantWriter implements MutantWriter {
         int contentSize = -1;
         if (harResp.has("content") && harResp.get("content") instanceof ObjectNode) {
             ObjectNode content = (ObjectNode) harResp.get("content");
-
             if (!content.hasNonNull("mimeType")) {
                 content.put("mimeType", "application/octet-stream");
             }
-
             if (!content.has("size")) {
                 if (content.hasNonNull("text")) {
-                    // Approximate: chars; if you want bytes, use UTF-8 byte length.
-                    contentSize = content.get("text").asText().length();
+                    contentSize = content.get("text").asText().length(); // approximate
                     content.put("size", contentSize);
                 } else {
                     content.put("size", 0);
@@ -225,11 +255,11 @@ public class HarMutantWriter implements MutantWriter {
             contentSize = 0;
         }
 
-        // Align bodySize with content.size when possible (improves viewer compatibility)
+        // Align bodySize with content.size
         if (!harResp.has("bodySize")) {
             harResp.put("bodySize", contentSize >= 0 ? contentSize : -1);
         } else if (harResp.get("bodySize").asInt(-1) < 0 && contentSize >= 0) {
-            ((ObjectNode) harResp).put("bodySize", contentSize);
+            harResp.put("bodySize", contentSize);
         }
 
         return harResp;
