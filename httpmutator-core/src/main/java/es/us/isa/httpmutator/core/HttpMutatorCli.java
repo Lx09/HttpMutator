@@ -7,6 +7,7 @@ import es.us.isa.httpmutator.core.reporter.CsvReporter;
 import es.us.isa.httpmutator.core.reporter.MutantReporter;
 import es.us.isa.httpmutator.core.strategy.AllOperatorsStrategy;
 import es.us.isa.httpmutator.core.strategy.MutationStrategy;
+import es.us.isa.httpmutator.core.strategy.RandomSingleStrategy;
 import es.us.isa.httpmutator.core.writer.HarMutantWriter;
 import es.us.isa.httpmutator.core.writer.JsonlMutantWriter;
 import es.us.isa.httpmutator.core.writer.MutantWriter;
@@ -24,30 +25,17 @@ import java.util.List;
 
 /**
  * Simple CLI entry point for HttpMutator.
- * <p>
+ *
  * Responsibilities:
  * - Parse basic command-line arguments
  * - Open input file as Reader
  * - Create appropriate HttpExchangeReader based on input format
  * - Create MutantWriter(s) that write to files under an output directory
  * - Wire everything into a configured HttpMutator and run mutateStream(...)
- * <p>
+ *
  * This class intentionally keeps the CLI logic separate from the core mutation
  * engine, so that the core API remains reusable from tests, libraries, and
  * other tools.
- * <p>
- * Example usage:
- * <p>
- * java -jar httpmutator.jar \
- * --input traffic.jsonl \
- * --format jsonl \
- * --output out \
- * --includeMeta
- * <p>
- * java -jar httpmutator.jar \
- * --input traffic.har \
- * --format har \
- * --output out
  */
 public final class HttpMutatorCli {
 
@@ -91,14 +79,14 @@ public final class HttpMutatorCli {
         List<MutantWriter> writers = createWriters(config);
         List<MutantReporter> reporters = createReporters(config);
 
-        MutationStrategy strategy = new AllOperatorsStrategy(); // or expose as a CLI parameter later
+        MutationStrategy strategy = createStrategy(config);
 
-        HttpMutator mutator = new HttpMutator(config.randomSeed)
-                .withMutationStrategy(strategy)
-                .withWriters(writers)
-                .withReporters(reporters);
+        try (Reader in = Files.newBufferedReader(input, StandardCharsets.UTF_8);
+             HttpMutator mutator = new HttpMutator(config.randomSeed)
+                     .withMutationStrategy(strategy)
+                     .withWriters(writers)
+                     .withReporters(reporters)) {
 
-        try (Reader in = Files.newBufferedReader(input, StandardCharsets.UTF_8)) {
             mutator.mutateStream(exchangeReader, in);
         }
     }
@@ -115,6 +103,19 @@ public final class HttpMutatorCli {
                 return new HarExchangeReader();
             default:
                 throw new IllegalArgumentException("Unsupported format: " + config.format);
+        }
+    }
+
+    private static MutationStrategy createStrategy(CliConfig config) {
+        switch (config.strategy) {
+            case EXHAUSTIVE:
+                return new AllOperatorsStrategy();
+
+            case RANDOM:
+                return new RandomSingleStrategy();
+
+            default:
+                throw new IllegalArgumentException("Unsupported strategy: " + config.strategy);
         }
     }
 
@@ -146,10 +147,6 @@ public final class HttpMutatorCli {
         return writers;
     }
 
-    /**
-     * Here you can plug your CSV reporter or any other MutantReporter implementation.
-     * For now this method returns an empty list as a placeholder.
-     */
     private static List<MutantReporter> createReporters(CliConfig config) {
         List<MutantReporter> reporters = new ArrayList<>();
 
@@ -186,6 +183,12 @@ public final class HttpMutatorCli {
         HAR
     }
 
+    // strategies exposed by CLI
+    private enum StrategyName {
+        RANDOM,
+        EXHAUSTIVE
+    }
+
     private static final class CliConfig {
         final Path inputFile;
         final InputFormat format;
@@ -195,13 +198,16 @@ public final class HttpMutatorCli {
         final long randomSeed;
         final List<String> reporterNames;
 
+        final StrategyName strategy;
+
         private CliConfig(Path inputFile,
                           InputFormat format,
                           Path outputDir,
                           String baseName,
                           boolean includeMeta,
                           long randomSeed,
-                          List<String> reporterNames) {
+                          List<String> reporterNames,
+                          StrategyName strategy) {
             this.inputFile = inputFile;
             this.format = format;
             this.outputDir = outputDir;
@@ -209,6 +215,7 @@ public final class HttpMutatorCli {
             this.includeMeta = includeMeta;
             this.randomSeed = randomSeed;
             this.reporterNames = reporterNames;
+            this.strategy = strategy;
         }
 
         static CliConfig parse(String[] args) {
@@ -223,6 +230,7 @@ public final class HttpMutatorCli {
             List<String> reporterNames = new ArrayList<>();
             boolean includeMeta = false;
             long randomSeed = 42L;
+            StrategyName strategy = StrategyName.RANDOM;
 
             for (int i = 0; i < args.length; i++) {
                 String arg = args[i];
@@ -237,6 +245,7 @@ public final class HttpMutatorCli {
                             baseName = stripExtension(input.getFileName().toString());
                         }
                         break;
+
                     case "--format":
                     case "-f":
                         if (i + 1 >= args.length) {
@@ -251,6 +260,7 @@ public final class HttpMutatorCli {
                             throw new IllegalArgumentException("Unknown format: " + fmt);
                         }
                         break;
+
                     case "--output":
                     case "-o":
                         if (i + 1 >= args.length) {
@@ -258,26 +268,39 @@ public final class HttpMutatorCli {
                         }
                         outputDir = Paths.get(args[++i]);
                         break;
+
                     case "--seed":
                         if (i + 1 >= args.length) {
                             throw new IllegalArgumentException("--seed requires a long value");
                         }
                         randomSeed = Long.parseLong(args[++i]);
                         break;
+
+                    case "--strategy":
+                    case "-s":
+                        if (i + 1 >= args.length) {
+                            throw new IllegalArgumentException("--strategy requires a name");
+                        }
+                        strategy = parseStrategy(args[++i]);
+                        break;
+
                     case "--includeMeta":
                         includeMeta = true;
                         break;
+
                     case "--reporter":
                         if (i + 1 >= args.length) {
                             throw new IllegalArgumentException("--reporter requires a name");
                         }
                         reporterNames.add(args[++i].toLowerCase());
                         break;
+
                     case "--help":
                     case "-h":
                         printUsage();
                         System.exit(0);
                         break;
+
                     default:
                         throw new IllegalArgumentException("Unknown argument: " + arg);
                 }
@@ -301,7 +324,20 @@ public final class HttpMutatorCli {
                 baseName = "mutants";
             }
 
-            return new CliConfig(input, format, outputDir, baseName, includeMeta, randomSeed, reporterNames);
+            return new CliConfig(input, format, outputDir, baseName, includeMeta, randomSeed, reporterNames, strategy);
+        }
+
+        private static StrategyName parseStrategy(String raw) {
+            String v = raw == null ? "" : raw.trim().toLowerCase();
+            switch (v) {
+                case "exhaustive":
+                case "all":
+                    return StrategyName.EXHAUSTIVE;
+                case "random":
+                    return StrategyName.RANDOM;
+                default:
+                    throw new IllegalArgumentException("Unknown strategy: " + raw + " (supported: all)");
+            }
         }
 
         private static String stripExtension(String fileName) {
@@ -317,21 +353,23 @@ public final class HttpMutatorCli {
         System.err.println("Usage: java -jar httpmutator.jar [options]");
         System.err.println();
         System.err.println("Required:");
-        System.err.println("  -i, --input <file>      Input file (JSONL or HAR)");
+        System.err.println("  -i, --input <file>        Input file (JSONL or HAR)");
         System.err.println();
         System.err.println("Optional:");
-        System.err.println("  -f, --format <fmt>      Input format: jsonl | har");
-        System.err.println("  -o, --output <dir>      Output directory (default: hm-output)");
-        System.err.println("      --includeMeta       Include mutation metadata fields in JSONL output");
-        System.err.println("      --seed <long>       Random seed (default: 42)");
-        System.err.println("  -h, --help              Show this help and exit");
+        System.err.println("  -f, --format <fmt>        Input format: jsonl | har");
+        System.err.println("  -o, --output <dir>        Output directory (default: hm-output)");
+        System.err.println("  -s, --strategy <name>     Mutation strategy (default: random)");
+        System.err.println("        Supported: exhaustive, random");
+        System.err.println("      --includeMeta         Include mutation metadata fields in JSONL output");
+        System.err.println("      --seed <long>         Random seed (default: 42)");
+        System.err.println("  -h, --help                Show this help and exit");
         System.err.println();
         System.err.println("Reporters:");
-        System.err.println("  --reporter csv        Per-request operator counts");
-        System.err.println("  --reporter none       Disable reporters");
+        System.err.println("  --reporter csv            Per-request operator counts");
+        System.err.println("  --reporter none           Disable reporters");
         System.err.println();
         System.err.println("Examples:");
-        System.err.println("  java -jar httpmutator.jar -i traffic.jsonl -f jsonl -o out --includeMeta");
-        System.err.println("  java -jar httpmutator.jar -i traffic.har   -f har   -o out");
+        System.err.println("  java -jar httpmutator.jar -i traffic.jsonl -f jsonl -o out -s all --includeMeta");
+        System.err.println("  java -jar httpmutator.jar -i traffic.har   -f har   -o out -s all");
     }
 }

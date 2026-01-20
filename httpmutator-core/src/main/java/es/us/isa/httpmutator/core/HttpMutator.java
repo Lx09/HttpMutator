@@ -47,6 +47,8 @@ public class HttpMutator implements AutoCloseable {
      */
     private long randomSeed;
 
+    private boolean closed = false;
+
     public HttpMutator() {
         this(42L);
     }
@@ -165,6 +167,9 @@ public class HttpMutator implements AutoCloseable {
 
     @Override
     public void close() throws IOException {
+        if (closed) return;
+        closed = true;
+
         IOException firstException = null;
 
         // 1. Close writers
