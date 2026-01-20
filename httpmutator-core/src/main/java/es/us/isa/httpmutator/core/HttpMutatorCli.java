@@ -119,21 +119,32 @@ public final class HttpMutatorCli {
         }
     }
 
+    /**
+     * Output selection rules:
+     * - If neither --writeHar nor --writeJsonl is provided -> default JSONL output.
+     * - If only --writeHar is provided -> only HAR output.
+     * - If only --writeJsonl is provided -> only JSONL output.
+     * - If both are provided -> output both.
+     */
     private static List<MutantWriter> createWriters(CliConfig config) throws IOException {
         List<MutantWriter> writers = new ArrayList<>();
 
-        // Always produce a JSONL of mutated responses
-        Path jsonlOut = config.outputDir.resolve(config.baseName + "-mutants.jsonl");
-        Writer jsonlWriter = Files.newBufferedWriter(
-                jsonlOut,
-                StandardCharsets.UTF_8,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING
-        );
-        writers.add(new JsonlMutantWriter(jsonlWriter, config.includeMeta));
+        boolean anySpecified = config.writeHar || config.writeJsonl;
+        boolean writeJsonl = !anySpecified || config.writeJsonl;
+        boolean writeHar = config.writeHar;
 
-        // If input is HAR, optionally also produce a HAR of mutated responses
-        if (config.format == InputFormat.HAR) {
+        if (writeJsonl) {
+            Path jsonlOut = config.outputDir.resolve(config.baseName + "-mutants.jsonl");
+            Writer jsonlWriter = Files.newBufferedWriter(
+                    jsonlOut,
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING
+            );
+            writers.add(new JsonlMutantWriter(jsonlWriter, config.includeMeta));
+        }
+
+        if (writeHar) {
             Path harOut = config.outputDir.resolve(config.baseName + "-mutants.har");
             Writer harWriter = Files.newBufferedWriter(
                     harOut,
@@ -200,6 +211,10 @@ public final class HttpMutatorCli {
 
         final StrategyName strategy;
 
+        // Output toggles
+        final boolean writeHar;
+        final boolean writeJsonl;
+
         private CliConfig(Path inputFile,
                           InputFormat format,
                           Path outputDir,
@@ -207,7 +222,9 @@ public final class HttpMutatorCli {
                           boolean includeMeta,
                           long randomSeed,
                           List<String> reporterNames,
-                          StrategyName strategy) {
+                          StrategyName strategy,
+                          boolean writeHar,
+                          boolean writeJsonl) {
             this.inputFile = inputFile;
             this.format = format;
             this.outputDir = outputDir;
@@ -216,6 +233,8 @@ public final class HttpMutatorCli {
             this.randomSeed = randomSeed;
             this.reporterNames = reporterNames;
             this.strategy = strategy;
+            this.writeHar = writeHar;
+            this.writeJsonl = writeJsonl;
         }
 
         static CliConfig parse(String[] args) {
@@ -231,6 +250,10 @@ public final class HttpMutatorCli {
             boolean includeMeta = false;
             long randomSeed = 42L;
             StrategyName strategy = StrategyName.RANDOM;
+
+            // Output flags (default selection implemented in createWriters)
+            boolean writeHar = false;
+            boolean writeJsonl = false;
 
             for (int i = 0; i < args.length; i++) {
                 String arg = args[i];
@@ -295,6 +318,15 @@ public final class HttpMutatorCli {
                         reporterNames.add(args[++i].toLowerCase());
                         break;
 
+                    // Output toggles
+                    case "--writeHar":
+                        writeHar = true;
+                        break;
+
+                    case "--writeJsonl":
+                        writeJsonl = true;
+                        break;
+
                     case "--help":
                     case "-h":
                         printUsage();
@@ -324,7 +356,11 @@ public final class HttpMutatorCli {
                 baseName = "mutants";
             }
 
-            return new CliConfig(input, format, outputDir, baseName, includeMeta, randomSeed, reporterNames, strategy);
+            return new CliConfig(
+                    input, format, outputDir, baseName,
+                    includeMeta, randomSeed, reporterNames, strategy,
+                    writeHar, writeJsonl
+            );
         }
 
         private static StrategyName parseStrategy(String raw) {
@@ -336,7 +372,7 @@ public final class HttpMutatorCli {
                 case "random":
                     return StrategyName.RANDOM;
                 default:
-                    throw new IllegalArgumentException("Unknown strategy: " + raw + " (supported: all)");
+                    throw new IllegalArgumentException("Unknown strategy: " + raw + " (supported: all, random)");
             }
         }
 
@@ -359,9 +395,11 @@ public final class HttpMutatorCli {
         System.err.println("  -f, --format <fmt>        Input format: jsonl | har");
         System.err.println("  -o, --output <dir>        Output directory (default: hm-output)");
         System.err.println("  -s, --strategy <name>     Mutation strategy (default: random)");
-        System.err.println("        Supported: exhaustive, random");
+        System.err.println("        Supported: exhaustive(all), random");
         System.err.println("      --includeMeta         Include mutation metadata fields in JSONL output");
         System.err.println("      --seed <long>         Random seed (default: 42)");
+        System.err.println("      --writeJsonl          Write JSONL output (default if no output flags are specified)");
+        System.err.println("      --writeHar            Write HAR output");
         System.err.println("  -h, --help                Show this help and exit");
         System.err.println();
         System.err.println("Reporters:");
@@ -369,7 +407,13 @@ public final class HttpMutatorCli {
         System.err.println("  --reporter none           Disable reporters");
         System.err.println();
         System.err.println("Examples:");
-        System.err.println("  java -jar httpmutator.jar -i traffic.jsonl -f jsonl -o out -s all --includeMeta");
-        System.err.println("  java -jar httpmutator.jar -i traffic.har   -f har   -o out -s all");
+        System.err.println("  # Default: JSONL output");
+        System.err.println("  java -jar httpmutator.jar -i traffic.jsonl -f jsonl -o out -s random");
+        System.err.println();
+        System.err.println("  # Only HAR output");
+        System.err.println("  java -jar httpmutator.jar -i traffic.jsonl -f jsonl -o out -s all --writeHar");
+        System.err.println();
+        System.err.println("  # Both JSONL + HAR output");
+        System.err.println("  java -jar httpmutator.jar -i traffic.jsonl -f jsonl -o out -s all --writeJsonl --writeHar");
     }
 }
